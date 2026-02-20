@@ -1,0 +1,5 @@
+{
+  "name": "sandbox",
+  "description": "E2B-compatible sandbox for local development with Docker",
+  "author": { "name": "Circles Inc." }
+}

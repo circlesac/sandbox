@@ -1,0 +1,36 @@
+class Sandbox < Formula
+  desc "Self-hosted E2B-compatible sandbox management CLI"
+  homepage "https://github.com/circlesac/sandbox"
+  version "VERSION_PLACEHOLDER"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/circlesac/sandbox/releases/download/v#{version}/sandbox-darwin-arm64.tar.gz"
+      sha256 "SHA_DARWIN_ARM64"
+    end
+    on_intel do
+      url "https://github.com/circlesac/sandbox/releases/download/v#{version}/sandbox-darwin-amd64.tar.gz"
+      sha256 "SHA_DARWIN_AMD64"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/circlesac/sandbox/releases/download/v#{version}/sandbox-linux-arm64.tar.gz"
+      sha256 "SHA_LINUX_ARM64"
+    end
+    on_intel do
+      url "https://github.com/circlesac/sandbox/releases/download/v#{version}/sandbox-linux-amd64.tar.gz"
+      sha256 "SHA_LINUX_AMD64"
+    end
+  end
+
+  def install
+    bin.install "sandbox"
+  end
+
+  test do
+    system "#{bin}/sandbox", "--help"
+  end
+end

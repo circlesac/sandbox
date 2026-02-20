@@ -1,0 +1,11 @@
+{
+  "name": "sandbox",
+  "owner": { "name": "Circles Inc." },
+  "plugins": [
+    {
+      "name": "sandbox",
+      "source": "./",
+      "description": "E2B-compatible sandbox for local development with Docker"
+    }
+  ]
+}
