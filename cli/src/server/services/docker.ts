@@ -134,7 +134,11 @@ export class DockerService {
     sandboxId: string,
   ): Promise<{ hostPort: number }> {
     const container = docker.getContainer(sandboxId);
-    await container.start();
+    try {
+      await container.start();
+    } catch (err: unknown) {
+      if (!isDockerNotModified(err)) throw err;
+    }
 
     const info = await container.inspect();
     const portBindings =
