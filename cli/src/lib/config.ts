@@ -7,6 +7,7 @@ export const CONFIG_PATH = join(SANDBOX_DIR, "config.json");
 
 export interface SandboxConfig {
   apiKey: string;
+  backend?: "docker" | "shuru";
 }
 
 export function configExists() {

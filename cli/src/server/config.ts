@@ -1,6 +1,7 @@
 export const config = {
   port: Number(process.env.PORT ?? 49982),
   apiKeys: (process.env.API_KEYS ?? "").split(",").filter(Boolean),
+  backend: process.env.SANDBOX_BACKEND ?? "docker",
   dockerSocket: process.env.DOCKER_SOCKET ?? "/var/run/docker.sock",
   defaultTimeoutSec: Number(process.env.DEFAULT_TIMEOUT_SEC ?? 300),
   maxTimeoutSec: Number(process.env.MAX_TIMEOUT_SEC ?? 3600),

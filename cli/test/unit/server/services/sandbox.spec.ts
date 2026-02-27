@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxService } from "../../../../src/server/services/sandbox.ts";
-import type { DockerService } from "../../../../src/server/services/docker.ts";
+import type { ContainerBackend } from "../../../../src/server/services/backend.ts";
 import type { EnvdService } from "../../../../src/server/services/envd.ts";
 import { TtlService } from "../../../../src/server/services/ttl.ts";
 
@@ -13,15 +13,17 @@ vi.mock("../../../../src/server/config.ts", () => ({
   },
 }));
 
-function createMockDocker(): DockerService {
+function createMockBackend(): ContainerBackend {
   return {
+    type: "docker",
+    resolveImage: vi.fn().mockResolvedValue("sandbox-base:latest"),
     createContainer: vi.fn().mockResolvedValue({
-      containerId: "container-123",
+      instanceId: "container-123",
       hostPort: 32768,
     }),
     inspectSandbox: vi.fn().mockResolvedValue({
       sandboxId: "sbx-test123",
-      containerId: "container-123",
+      instanceId: "container-123",
       accessToken: "token-abc",
       templateId: "base",
       createdAt: new Date().toISOString(),
@@ -33,7 +35,7 @@ function createMockDocker(): DockerService {
     stopContainer: vi.fn().mockResolvedValue(true),
     startContainer: vi.fn().mockResolvedValue({ hostPort: 32769 }),
     listSandboxes: vi.fn().mockResolvedValue([]),
-  } as unknown as DockerService;
+  } as unknown as ContainerBackend;
 }
 
 function createMockEnvd(): EnvdService {
@@ -44,18 +46,18 @@ function createMockEnvd(): EnvdService {
 }
 
 describe("SandboxService", () => {
-  let docker: ReturnType<typeof createMockDocker>;
+  let backend: ReturnType<typeof createMockBackend>;
   let envd: ReturnType<typeof createMockEnvd>;
   let ttl: TtlService;
   let service: SandboxService;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    docker = createMockDocker();
+    backend = createMockBackend();
     envd = createMockEnvd();
     ttl = new TtlService();
     service = new SandboxService(
-      docker as unknown as DockerService,
+      backend as unknown as ContainerBackend,
       envd as unknown as EnvdService,
       ttl,
     );
@@ -71,7 +73,7 @@ describe("SandboxService", () => {
       expect(result.envdAccessToken).toBeTruthy();
       expect(result.trafficAccessToken).toBeNull();
 
-      expect(docker.createContainer).toHaveBeenCalledOnce();
+      expect(backend.createContainer).toHaveBeenCalledOnce();
       expect(envd.waitForHealth).toHaveBeenCalledWith(32768);
       expect(envd.init).toHaveBeenCalledOnce();
     });
@@ -84,13 +86,13 @@ describe("SandboxService", () => {
       await expect(service.create({ templateID: "base" })).rejects.toThrow(
         "timeout",
       );
-      expect(docker.removeContainer).toHaveBeenCalledOnce();
+      expect(backend.removeContainer).toHaveBeenCalledOnce();
     });
 
     it("clamps timeout to maxTimeoutSec", async () => {
       await service.create({ templateID: "base", timeout: 99999 });
 
-      const createCall = (docker.createContainer as ReturnType<typeof vi.fn>)
+      const createCall = (backend.createContainer as ReturnType<typeof vi.fn>)
         .mock.calls[0]![0];
       expect(createCall.timeoutSec).toBe(3600);
     });
@@ -102,7 +104,7 @@ describe("SandboxService", () => {
       const result = await service.kill("sbx-test");
 
       expect(result).toBe(true);
-      expect(docker.removeContainer).toHaveBeenCalledWith("sbx-test");
+      expect(backend.removeContainer).toHaveBeenCalledWith("sbx-test");
       expect(clearSpy).toHaveBeenCalledWith("sbx-test");
     });
   });
@@ -113,7 +115,7 @@ describe("SandboxService", () => {
       const result = await service.pause("sbx-test");
 
       expect(result).toBe(true);
-      expect(docker.stopContainer).toHaveBeenCalledWith("sbx-test");
+      expect(backend.stopContainer).toHaveBeenCalledWith("sbx-test");
       expect(clearSpy).toHaveBeenCalledWith("sbx-test");
     });
   });
@@ -124,13 +126,13 @@ describe("SandboxService", () => {
 
       expect(result.sandboxID).toBe("sbx-test123");
       expect(result.envdAccessToken).toBe("token-abc");
-      expect(docker.startContainer).toHaveBeenCalledWith("sbx-test123");
+      expect(backend.startContainer).toHaveBeenCalledWith("sbx-test123");
       expect(envd.waitForHealth).toHaveBeenCalledWith(32769);
       expect(envd.init).toHaveBeenCalledOnce();
     });
 
     it("throws NotFoundError if sandbox does not exist", async () => {
-      (docker.inspectSandbox as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (backend.inspectSandbox as ReturnType<typeof vi.fn>).mockResolvedValue(
         null,
       );
 

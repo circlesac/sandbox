@@ -32,6 +32,7 @@ describe("serve command", () => {
     });
     // Clear env vars between tests
     delete process.env.API_KEYS;
+    delete process.env.SANDBOX_BACKEND;
   });
 
   it("exits with error if not initialized", async () => {
@@ -50,5 +51,26 @@ describe("serve command", () => {
     await run([]);
 
     expect(process.env.API_KEYS).toBe("sk-sandbox-abc");
+  });
+
+  it("sets SANDBOX_BACKEND env var when backend is configured", async () => {
+    readConfigMock.mockReturnValue({
+      apiKey: "sk-sandbox-abc",
+      backend: "shuru",
+    });
+
+    await run([]);
+
+    expect(process.env.SANDBOX_BACKEND).toBe("shuru");
+  });
+
+  it("does not set SANDBOX_BACKEND when backend is not configured", async () => {
+    readConfigMock.mockReturnValue({
+      apiKey: "sk-sandbox-abc",
+    });
+
+    await run([]);
+
+    expect(process.env.SANDBOX_BACKEND).toBeUndefined();
   });
 });

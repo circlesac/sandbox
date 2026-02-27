@@ -20,19 +20,22 @@ export class EnvdService {
   async init(
     hostPort: number,
     opts: {
-      accessToken: string;
+      accessToken?: string;
       defaultUser?: string;
       envVars?: Record<string, string>;
     },
   ): Promise<void> {
+    const payload: Record<string, unknown> = {
+      defaultUser: opts.defaultUser ?? config.defaultUser,
+      envVars: opts.envVars ?? {},
+    };
+    if (opts.accessToken) {
+      payload.accessToken = opts.accessToken;
+    }
     const res = await fetch(`http://localhost:${hostPort}/init`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        accessToken: opts.accessToken,
-        defaultUser: opts.defaultUser ?? config.defaultUser,
-        envVars: opts.envVars ?? {},
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok && res.status !== 204) {

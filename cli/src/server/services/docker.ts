@@ -1,8 +1,7 @@
 import Docker from "dockerode";
 import { config } from "../config.ts";
 import type { SandboxInfo, SandboxLabels } from "../types.ts";
-
-const docker = new Docker({ socketPath: config.dockerSocket });
+import type { ContainerBackend, CreateContainerOpts } from "./backend.ts";
 
 const REGISTRY = "ghcr.io/circlesac";
 
@@ -14,11 +13,18 @@ function registryImageName(templateId: string) {
   return `${REGISTRY}/sandbox-${templateId}:latest`;
 }
 
-export class DockerService {
+export class DockerService implements ContainerBackend {
+  readonly type = "docker" as const;
+  private docker: Docker;
+
+  constructor(opts: { socketPath: string }) {
+    this.docker = new Docker({ socketPath: opts.socketPath });
+  }
+
   async resolveImage(templateId: string): Promise<string> {
     const local = localImageName(templateId);
     try {
-      await docker.getImage(local).inspect();
+      await this.docker.getImage(local).inspect();
       return local;
     } catch {
       // not found locally
@@ -27,9 +33,9 @@ export class DockerService {
     const remote = registryImageName(templateId);
     try {
       await new Promise<void>((resolve, reject) => {
-        docker.pull(remote, (err: Error | null, stream: NodeJS.ReadableStream) => {
+        this.docker.pull(remote, (err: Error | null, stream: NodeJS.ReadableStream) => {
           if (err) return reject(err);
-          docker.modem.followProgress(stream, (err: Error | null) =>
+          this.docker.modem.followProgress(stream, (err: Error | null) =>
             err ? reject(err) : resolve(),
           );
         });
@@ -42,14 +48,9 @@ export class DockerService {
     }
   }
 
-  async createContainer(opts: {
-    sandboxId: string;
-    accessToken: string;
-    templateId: string;
-    timeoutSec: number;
-    envVars?: Record<string, string>;
-    metadata?: Record<string, string>;
-  }): Promise<{ containerId: string; hostPort: number }> {
+  async createContainer(
+    opts: CreateContainerOpts,
+  ): Promise<{ instanceId: string; hostPort: number }> {
     const image = await this.resolveImage(opts.templateId);
 
     const labels: Record<string, string> = {
@@ -67,7 +68,7 @@ export class DockerService {
       ? Object.entries(opts.envVars).map(([k, v]) => `${k}=${v}`)
       : [];
 
-    const container = await docker.createContainer({
+    const container = await this.docker.createContainer({
       Image: image,
       name: opts.sandboxId,
       Labels: labels,
@@ -92,12 +93,12 @@ export class DockerService {
       throw new Error(`Failed to get host port for ${opts.sandboxId}`);
     }
 
-    return { containerId: info.Id, hostPort };
+    return { instanceId: info.Id, hostPort };
   }
 
   async inspectSandbox(sandboxId: string): Promise<SandboxInfo | null> {
     try {
-      const container = docker.getContainer(sandboxId);
+      const container = this.docker.getContainer(sandboxId);
       const info = await container.inspect();
       return this.parseContainerInfo(info);
     } catch (err: unknown) {
@@ -108,7 +109,7 @@ export class DockerService {
 
   async removeContainer(sandboxId: string): Promise<boolean> {
     try {
-      const container = docker.getContainer(sandboxId);
+      const container = this.docker.getContainer(sandboxId);
       await container.remove({ force: true });
       return true;
     } catch (err: unknown) {
@@ -119,7 +120,7 @@ export class DockerService {
 
   async stopContainer(sandboxId: string): Promise<boolean> {
     try {
-      const container = docker.getContainer(sandboxId);
+      const container = this.docker.getContainer(sandboxId);
       await container.stop();
       return true;
     } catch (err: unknown) {
@@ -133,7 +134,7 @@ export class DockerService {
   async startContainer(
     sandboxId: string,
   ): Promise<{ hostPort: number }> {
-    const container = docker.getContainer(sandboxId);
+    const container = this.docker.getContainer(sandboxId);
     try {
       await container.start();
     } catch (err: unknown) {
@@ -157,7 +158,7 @@ export class DockerService {
   async listSandboxes(filters?: {
     state?: "running" | "paused";
   }): Promise<SandboxInfo[]> {
-    const containers = await docker.listContainers({
+    const containers = await this.docker.listContainers({
       all: true,
       filters: { label: ["e2b.sandbox-id"] },
     });
@@ -180,7 +181,7 @@ export class DockerService {
 
     return {
       sandboxId: labels["e2b.sandbox-id"] ?? info.Name.replace(/^\//, ""),
-      containerId: info.Id,
+      instanceId: info.Id,
       accessToken: labels["e2b.access-token"] ?? "",
       templateId: labels["e2b.template-id"] ?? "base",
       createdAt: labels["e2b.created-at"] ?? info.Created,
@@ -205,7 +206,7 @@ export class DockerService {
 
     return {
       sandboxId: labels["e2b.sandbox-id"],
-      containerId: c.Id,
+      instanceId: c.Id,
       accessToken: labels["e2b.access-token"] ?? "",
       templateId: labels["e2b.template-id"] ?? "base",
       createdAt: labels["e2b.created-at"] ?? "",

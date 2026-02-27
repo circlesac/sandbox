@@ -9,6 +9,9 @@ export async function run(_args: string[]) {
 
   // Set env vars for the server config module
   process.env.API_KEYS = config.apiKey;
+  if (config.backend) {
+    process.env.SANDBOX_BACKEND = config.backend;
+  }
 
   // Import starts the server via Bun's default export
   await import("../server/index.ts");
