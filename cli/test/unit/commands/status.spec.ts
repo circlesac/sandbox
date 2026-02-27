@@ -106,4 +106,40 @@ describe("status command", () => {
 
     logSpy.mockRestore();
   });
+
+  it("shows sandbox count for shuru backend via API", async () => {
+    readConfigMock.mockReturnValue({ apiKey: "sk-sandbox-abc", backend: "shuru" });
+
+    fetchMock
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "sbx-1" }, { id: "sbx-2" }]), {
+          status: 200,
+        }),
+      );
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await run([]);
+
+    const output = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("shuru");
+    expect(output).toContain("2");
+
+    logSpy.mockRestore();
+  });
+
+  it("shows - for sandbox count when shuru server is unreachable", async () => {
+    readConfigMock.mockReturnValue({ apiKey: "sk-sandbox-abc", backend: "shuru" });
+
+    fetchMock.mockRejectedValue(new Error("ECONNREFUSED"));
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await run([]);
+
+    const output = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("-");
+    expect(output).toContain("unreachable");
+
+    logSpy.mockRestore();
+  });
 });

@@ -1,30 +1,35 @@
 ---
 name: sandbox-guide
-description: Guide for using the E2B-compatible local sandbox with Docker
+description: Guide for using the E2B-compatible local sandbox with Docker or Shuru microVMs
 user-invocable: true
 argument-hint: "<question-about-sandbox>"
 ---
 
 # Sandbox
 
-E2B-compatible sandbox that runs locally using Docker. Use the standard E2B SDK — when ready for production, switch to real E2B by changing one config value.
+E2B-compatible sandbox that runs locally using Docker or Shuru microVMs. Use the standard E2B SDK — when ready for production, switch to real E2B by changing one config value.
 
 ## Quick Start
 
 ```bash
-# Install and initialize
+# Install
 npm install -g @circlesac/sandbox
-sandbox init     # checks Docker, generates API key
+
+# Start (auto-generates API key on first run)
 sandbox serve    # starts the control plane on :49982
 ```
 
 ## Architecture
 
 ```
-E2B SDK → Control Plane (Hono on :49982) → Docker → Containers (envd)
+E2B SDK → Control Plane (Hono on :49982) → Backend → Sandboxes (envd)
 ```
 
-The control plane proxies E2B SDK requests to Docker containers running envd. Three routing layers:
+Backends:
+- **Docker** (default): Linux containers via Docker Engine
+- **Shuru** (macOS): Linux microVMs via Apple Virtualization.framework
+
+The control plane proxies E2B SDK requests to sandbox instances running envd. Three routing layers:
 1. **Host header** — `{port}-{sandboxId}.{domain}` for domain-based routing
 2. **E2b-Sandbox-Id header** — gRPC transport (commands, process)
 3. **X-Access-Token header** — envd REST API (files, health)
@@ -59,9 +64,21 @@ await sandbox.kill();
 
 | Command | Description |
 |---------|-------------|
-| `sandbox init` | Check Docker, generate API key, write `~/.sandbox/config.json` |
-| `sandbox serve` | Start the control plane server |
-| `sandbox status` | Show health and running sandbox count |
+| `sandbox serve` | Start the control plane server (auto-generates API key on first run) |
+| `sandbox status` | Show health, backend, and running sandbox count |
+
+## Backend Configuration
+
+Edit `~/.sandbox/config.json` to set the backend:
+
+```json
+{
+  "apiKey": "sk-sandbox-...",
+  "backend": "shuru"
+}
+```
+
+Omit `backend` or set to `"docker"` for Docker (default).
 
 ## API Endpoints
 
@@ -72,16 +89,30 @@ await sandbox.kill();
 | GET | `/sandboxes/:id` | Get sandbox info |
 | DELETE | `/sandboxes/:id` | Kill a sandbox |
 | POST | `/sandboxes/:id/timeout` | Update timeout |
-| POST | `/sandboxes/:id/pause` | Pause a sandbox |
-| POST | `/sandboxes/:id/resume` | Resume a paused sandbox |
+| POST | `/sandboxes/:id/pause` | Pause a sandbox (Docker only) |
+| POST | `/sandboxes/:id/resume` | Resume a paused sandbox (Docker only) |
 | GET | `/health` | Health check (no auth) |
 
 All endpoints except `/health` require `X-API-Key` header.
 
 ## Template Images
 
+### Docker
+
 Templates map to Docker images. Resolution order:
 1. Local image: `sandbox-{templateId}:latest` (e.g., `sandbox-base:latest`)
 2. GHCR fallback: `ghcr.io/circlesac/sandbox-{templateId}:latest`
 
-The default template is `base` which uses the envd-based sandbox image.
+Build the base image: `docker build -t sandbox-base:latest docker/sandbox`
+
+### Shuru
+
+Templates map to shuru checkpoints named `sandbox-{templateId}` (e.g., `sandbox-base`).
+
+Create a checkpoint:
+```bash
+shuru checkpoint create sandbox-base --allow-net -- sh -c \
+  'apk add --no-cache bash sudo curl wget && ...'
+```
+
+If no `sandbox-base` checkpoint exists, shuru runs a plain Alpine VM.

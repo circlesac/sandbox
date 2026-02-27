@@ -13,13 +13,14 @@ export async function run(_args: string[]) {
 
   const backend = config.backend ?? "docker";
 
-  let sandboxCount = 0;
-  if (backend === "docker") {
-    if (!isDockerRunning()) {
-      console.error("Docker is not running.");
-      process.exit(1);
-    }
+  if (backend === "docker" && !isDockerRunning()) {
+    console.error("Docker is not running.");
+    process.exit(1);
+  }
 
+  let sandboxCount: number | null = null;
+
+  if (backend === "docker") {
     const { stdout: countOutput } = exec(
       `docker ps --filter "label=e2b.sandbox-id" -q`,
     );
@@ -38,7 +39,22 @@ export async function run(_args: string[]) {
     // unreachable
   }
 
+  if (backend === "shuru" && health === "healthy") {
+    try {
+      const res = await fetch("http://localhost:49982/sandboxes", {
+        headers: { "X-API-Key": config.apiKey },
+        signal: AbortSignal.timeout(2000),
+      });
+      if (res.ok) {
+        const sandboxes = (await res.json()) as unknown[];
+        sandboxCount = sandboxes.length;
+      }
+    } catch {
+      // leave as null
+    }
+  }
+
   console.log(`Control plane:  ${health}`);
   console.log(`Backend:        ${backend}`);
-  console.log(`Sandboxes:      ${sandboxCount}`);
+  console.log(`Sandboxes:      ${sandboxCount ?? "-"}`);
 }

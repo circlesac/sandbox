@@ -1,6 +1,57 @@
-# Container Runtimes
+# Sandbox Backends
 
-## Summary
+## Overview
+
+| | Docker | Shuru | Podman |
+|---|---|---|---|
+| **Technology** | Linux containers | macOS microVMs (Apple Virt) | Linux containers |
+| **Platform** | All | macOS only | All |
+| **Isolation** | Namespace/cgroup | Hardware VM | Namespace/cgroup |
+| **Pause/resume** | Yes | No (ephemeral) | Yes |
+| **Base image** | `docker build` | `shuru checkpoint create` | `docker build` |
+| **Status** | Default | Supported | Not implemented |
+
+**Start with Docker.** Use Shuru on macOS for stronger isolation (each sandbox is a separate VM).
+
+## Shuru (macOS microVMs)
+
+Shuru uses [Apple Virtualization.framework](https://developer.apple.com/documentation/virtualization) to run ephemeral Alpine Linux microVMs. Each sandbox gets its own VM — no shared kernel with other sandboxes or the host.
+
+**Key differences from Docker:**
+- Sandboxes are ephemeral — no pause/resume (VM is destroyed on stop)
+- State is in-memory in the control plane; lost if `sandbox serve` restarts
+- `accessToken` not sent to envd (Alpine memguard incompatibility)
+- envd requires `-isnotfc` flag to disable Firecracker-specific behavior
+
+**Checkpoint setup:**
+
+```bash
+# Build envd for linux/arm64
+docker run --rm -v /tmp/envd-build:/out \
+  -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=arm64 \
+  golang:1.22-alpine sh -c \
+  'apk add git && git clone https://github.com/e2b-dev/infra /src && \
+   cd /src/packages/envd && go build -o /out/envd ./cmd/envd'
+
+# Serve the binary (in a separate terminal)
+cd /tmp/envd-build && python3 -m http.server 8080
+
+# Create checkpoint (192.168.64.1 is the shuru NAT gateway / host IP)
+shuru checkpoint create sandbox-base --allow-net -- sh -c \
+  'apk add --no-cache bash sudo curl wget && \
+   wget -O /usr/local/bin/envd http://192.168.64.1:8080/envd && \
+   chmod +x /usr/local/bin/envd'
+```
+
+**Configure:**
+```json
+{ "apiKey": "sk-sandbox-...", "backend": "shuru" }
+```
+(edit `~/.sandbox/config.json` after first `sandbox serve`)
+
+---
+
+## Docker vs Podman
 
 **Start with Docker. Switch to Podman later if needed — switching cost is one line.**
 
