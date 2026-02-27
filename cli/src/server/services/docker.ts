@@ -15,6 +15,7 @@ function registryImageName(templateId: string) {
 
 export class DockerService implements ContainerBackend {
   readonly type = "docker" as const;
+  readonly supportsPause = true;
   private docker: Docker;
 
   constructor(opts: { socketPath: string }) {

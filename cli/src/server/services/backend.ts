@@ -15,6 +15,7 @@ export interface CreateContainerOpts {
 
 export interface ContainerBackend {
   readonly type: BackendType;
+  readonly supportsPause: boolean;
 
   resolveImage(templateId: string): Promise<string>;
 

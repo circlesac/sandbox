@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SandboxService } from "../../../../src/server/services/sandbox.ts";
+import { SandboxService, UnsupportedError } from "../../../../src/server/services/sandbox.ts";
 import type { ContainerBackend } from "../../../../src/server/services/backend.ts";
 import type { EnvdService } from "../../../../src/server/services/envd.ts";
 import { TtlService } from "../../../../src/server/services/ttl.ts";
@@ -16,6 +16,7 @@ vi.mock("../../../../src/server/config.ts", () => ({
 function createMockBackend(): ContainerBackend {
   return {
     type: "docker",
+    supportsPause: true,
     resolveImage: vi.fn().mockResolvedValue("sandbox-base:latest"),
     createContainer: vi.fn().mockResolvedValue({
       instanceId: "container-123",
@@ -117,6 +118,13 @@ describe("SandboxService", () => {
       expect(result).toBe(true);
       expect(backend.stopContainer).toHaveBeenCalledWith("sbx-test");
       expect(clearSpy).toHaveBeenCalledWith("sbx-test");
+    });
+
+    it("throws UnsupportedError when backend does not support pause", async () => {
+      (backend as unknown as { supportsPause: boolean }).supportsPause = false;
+
+      await expect(service.pause("sbx-test")).rejects.toThrow(UnsupportedError);
+      expect(backend.stopContainer).not.toHaveBeenCalled();
     });
   });
 

@@ -85,6 +85,11 @@ export class SandboxService {
   }
 
   async pause(sandboxId: string): Promise<boolean> {
+    if (!this.backend.supportsPause) {
+      throw new UnsupportedError(
+        `Pause is not supported by the ${this.backend.type} backend`,
+      );
+    }
     this.ttl.clear(sandboxId);
     return this.backend.stopContainer(sandboxId);
   }
@@ -165,5 +170,12 @@ export class NotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "NotFoundError";
+  }
+}
+
+export class UnsupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsupportedError";
   }
 }

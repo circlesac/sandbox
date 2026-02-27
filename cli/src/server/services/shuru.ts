@@ -57,6 +57,7 @@ function listCheckpoints(): string[] {
 
 export class ShuruBackend implements ContainerBackend {
   readonly type = "shuru" as const;
+  readonly supportsPause = false;
   private instances = new Map<string, ShruInstance>();
 
   async resolveImage(templateId: string): Promise<string> {
