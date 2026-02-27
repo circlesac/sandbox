@@ -6,7 +6,6 @@ const commands: Record<
   string,
   () => Promise<{ run: (args: string[]) => Promise<void> }>
 > = {
-  init: () => import("./commands/init.ts"),
   serve: () => import("./commands/serve.ts"),
   status: () => import("./commands/status.ts"),
 };
@@ -15,7 +14,6 @@ function printHelp() {
   console.log(`Usage: sandbox <command>
 
 Commands:
-  init      Interactive first-time setup
   serve     Run the control plane server
   status    Show stack health and running sandboxes`);
 }

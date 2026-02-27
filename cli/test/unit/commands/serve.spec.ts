@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const readConfigMock = vi.fn();
+const writeConfigMock = vi.fn();
 const processExitMock = vi
   .spyOn(process, "exit")
   .mockImplementation(() => undefined as never);
@@ -10,6 +11,7 @@ vi.mock("../../../src/lib/config.ts", async (importOriginal) => {
   return {
     ...actual,
     readConfig: readConfigMock,
+    writeConfig: writeConfigMock,
   };
 });
 
@@ -18,38 +20,31 @@ vi.mock("../../../src/server/index.ts", () => ({}));
 
 const { run } = await import("../../../src/commands/serve.ts");
 
-class ExitError extends Error {
-  constructor(public code: number) {
-    super(`process.exit(${code})`);
-  }
-}
-
 describe("serve command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    processExitMock.mockImplementation((code) => {
-      throw new ExitError(code as number);
-    });
     // Clear env vars between tests
     delete process.env.API_KEYS;
     delete process.env.SANDBOX_BACKEND;
   });
 
-  it("exits with error if not initialized", async () => {
+  it("auto-generates config on first run", async () => {
     readConfigMock.mockReturnValue(null);
-
-    await expect(run([])).rejects.toThrow(ExitError);
-
-    expect(processExitMock).toHaveBeenCalledWith(1);
-  });
-
-  it("sets env vars from config and imports server", async () => {
-    readConfigMock.mockReturnValue({
-      apiKey: "sk-sandbox-abc",
-    });
 
     await run([]);
 
+    expect(writeConfigMock).toHaveBeenCalledOnce();
+    const written = writeConfigMock.mock.calls[0][0];
+    expect(written.apiKey).toMatch(/^sk-sandbox-/);
+    expect(process.env.API_KEYS).toBe(written.apiKey);
+  });
+
+  it("reuses existing config", async () => {
+    readConfigMock.mockReturnValue({ apiKey: "sk-sandbox-abc" });
+
+    await run([]);
+
+    expect(writeConfigMock).not.toHaveBeenCalled();
     expect(process.env.API_KEYS).toBe("sk-sandbox-abc");
   });
 

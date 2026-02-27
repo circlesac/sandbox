@@ -5,21 +5,28 @@ import { isDockerRunning } from "../lib/checks.ts";
 export async function run(_args: string[]) {
   const config = readConfig();
   if (!config) {
-    console.error("Not initialized. Run 'sandbox init' first.");
-    process.exit(1);
+    console.log("Control plane:  not configured");
+    console.log("Sandboxes:      -");
+    console.log("\nRun 'sandbox serve' to get started.");
+    return;
   }
 
-  if (!isDockerRunning()) {
-    console.error("Docker is not running.");
-    process.exit(1);
-  }
+  const backend = config.backend ?? "docker";
 
-  const { stdout: countOutput } = exec(
-    `docker ps --filter "label=e2b.sandbox-id" -q`,
-  );
-  const sandboxCount = countOutput.trim()
-    ? countOutput.trim().split("\n").length
-    : 0;
+  let sandboxCount = 0;
+  if (backend === "docker") {
+    if (!isDockerRunning()) {
+      console.error("Docker is not running.");
+      process.exit(1);
+    }
+
+    const { stdout: countOutput } = exec(
+      `docker ps --filter "label=e2b.sandbox-id" -q`,
+    );
+    sandboxCount = countOutput.trim()
+      ? countOutput.trim().split("\n").length
+      : 0;
+  }
 
   let health = "unreachable";
   try {
@@ -32,5 +39,6 @@ export async function run(_args: string[]) {
   }
 
   console.log(`Control plane:  ${health}`);
+  console.log(`Backend:        ${backend}`);
   console.log(`Sandboxes:      ${sandboxCount}`);
 }

@@ -45,12 +45,15 @@ describe("status command", () => {
     });
   });
 
-  it("exits with error if not initialized", async () => {
+  it("shows not configured when config is missing", async () => {
     readConfigMock.mockReturnValue(null);
 
-    await expect(run([])).rejects.toThrow(ExitError);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await run([]);
 
-    expect(processExitMock).toHaveBeenCalledWith(1);
+    const output = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("not configured");
+    logSpy.mockRestore();
   });
 
   it("exits with error if docker is not running", async () => {

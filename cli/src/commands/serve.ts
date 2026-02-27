@@ -1,10 +1,14 @@
-import { readConfig } from "../lib/config.ts";
+import { randomBytes } from "node:crypto";
+import { readConfig, writeConfig } from "../lib/config.ts";
 
 export async function run(_args: string[]) {
-  const config = readConfig();
+  let config = readConfig();
+
   if (!config) {
-    console.error("Not initialized. Run 'sandbox init' first.");
-    process.exit(1);
+    const apiKey = `sk-sandbox-${randomBytes(24).toString("hex")}`;
+    config = { apiKey };
+    writeConfig(config);
+    console.log(`API Key: ${apiKey}\n`);
   }
 
   // Set env vars for the server config module
