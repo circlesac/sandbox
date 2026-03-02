@@ -5,21 +5,29 @@ import { isDockerRunning } from "../lib/checks.ts";
 export async function run(_args: string[]) {
   const config = readConfig();
   if (!config) {
-    console.error("Not initialized. Run 'sandbox init' first.");
-    process.exit(1);
+    console.log("Control plane:  not configured");
+    console.log("Sandboxes:      -");
+    console.log("\nRun 'sandbox serve' to get started.");
+    return;
   }
 
-  if (!isDockerRunning()) {
+  const backend = config.backend ?? "docker";
+
+  if (backend === "docker" && !isDockerRunning()) {
     console.error("Docker is not running.");
     process.exit(1);
   }
 
-  const { stdout: countOutput } = exec(
-    `docker ps --filter "label=e2b.sandbox-id" -q`,
-  );
-  const sandboxCount = countOutput.trim()
-    ? countOutput.trim().split("\n").length
-    : 0;
+  let sandboxCount: number | null = null;
+
+  if (backend === "docker") {
+    const { stdout: countOutput } = exec(
+      `docker ps --filter "label=e2b.sandbox-id" -q`,
+    );
+    sandboxCount = countOutput.trim()
+      ? countOutput.trim().split("\n").length
+      : 0;
+  }
 
   let health = "unreachable";
   try {
@@ -31,6 +39,22 @@ export async function run(_args: string[]) {
     // unreachable
   }
 
+  if (backend === "shuru" && health === "healthy") {
+    try {
+      const res = await fetch("http://localhost:49982/sandboxes", {
+        headers: { "X-API-Key": config.apiKey },
+        signal: AbortSignal.timeout(2000),
+      });
+      if (res.ok) {
+        const sandboxes = (await res.json()) as unknown[];
+        sandboxCount = sandboxes.length;
+      }
+    } catch {
+      // leave as null
+    }
+  }
+
   console.log(`Control plane:  ${health}`);
-  console.log(`Sandboxes:      ${sandboxCount}`);
+  console.log(`Backend:        ${backend}`);
+  console.log(`Sandboxes:      ${sandboxCount ?? "-"}`);
 }

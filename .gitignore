@@ -1,2 +1,6 @@
 .DS_Store
 .claude/settings.local.json
+.env
+cloudflared.yml
+cloudflared-credentials.json
+sandbox-config.json

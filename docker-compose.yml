@@ -1,0 +1,21 @@
+services:
+  sandbox:
+    build: docker/server
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./sandbox-config.json:/root/.sandbox/config.json:ro
+    environment:
+      PORT: 49982
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    network_mode: host
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared-credentials.json:/etc/cloudflared/credentials.json:ro
+    restart: unless-stopped
+    depends_on:
+      - sandbox

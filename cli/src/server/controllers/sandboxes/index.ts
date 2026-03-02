@@ -1,7 +1,7 @@
 import { OpenAPIRoute } from "chanfana";
 import type { Context } from "hono";
 import { z } from "zod";
-import { NotFoundError, type SandboxService } from "../../services/sandbox.ts";
+import { NotFoundError, UnsupportedError, type SandboxService } from "../../services/sandbox.ts";
 import {
   ConnectBodySchema,
   CreateSandboxBodySchema,
@@ -157,9 +157,15 @@ export class PauseSandbox extends OpenAPIRoute {
 
   override async handle(c: Context) {
     const id = c.req.param("sandboxID");
-    const paused = await sandboxService.pause(id);
-    if (!paused) return c.json({ error: "not_found", message: `Sandbox ${id} not found` }, 404);
-    return c.body(null, 204);
+    try {
+      const paused = await sandboxService.pause(id);
+      if (!paused) return c.json({ error: "not_found", message: `Sandbox ${id} not found` }, 404);
+      return c.body(null, 204);
+    } catch (err) {
+      if (err instanceof UnsupportedError)
+        return c.json({ error: "unsupported", message: err.message }, 501);
+      throw err;
+    }
   }
 }
 
@@ -206,6 +212,8 @@ export class ResumeSandbox extends OpenAPIRoute {
     } catch (err) {
       if (err instanceof NotFoundError)
         return c.json({ error: "not_found", message: err.message }, 404);
+      if (err instanceof UnsupportedError)
+        return c.json({ error: "unsupported", message: err.message }, 501);
       throw err;
     }
   }

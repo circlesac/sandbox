@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import type { DockerService } from "./docker.ts";
+import type { ContainerBackend } from "./backend.ts";
 
 const portCache = new Map<string, number>();
 const tokenCache = new Map<string, string>(); // accessToken → sandboxId
@@ -36,7 +36,7 @@ export function parseEnvdHostname(
 
 export async function handleProxyRequest(
   c: Context,
-  docker: DockerService,
+  backend: ContainerBackend,
   sandboxIdOverride?: string,
 ): Promise<Response> {
   let sandboxId = sandboxIdOverride;
@@ -53,7 +53,7 @@ export async function handleProxyRequest(
   // Resolve host port (cached)
   let hostPort = portCache.get(sandboxId);
   if (!hostPort) {
-    const info = await docker.inspectSandbox(sandboxId);
+    const info = await backend.inspectSandbox(sandboxId);
     if (!info || info.state !== "running") {
       return c.json(
         { code: 502, message: `Sandbox ${sandboxId} not available` },

@@ -1,10 +1,12 @@
 # Sandbox
 
-E2B-compatible sandbox that runs locally using Docker. Use the standard [E2B SDK](https://github.com/e2b-dev/e2b) — when ready for production, switch to real E2B by changing one URL.
+E2B-compatible sandbox that runs locally using Docker or Shuru microVMs. Use the standard [E2B SDK](https://github.com/e2b-dev/e2b) — when ready for production, switch to real E2B by changing one URL.
 
-See [PLAN.md](PLAN.md) for architecture and [docs/container-runtimes.md](docs/container-runtimes.md) for container runtime comparison.
+See [docs/container-runtimes.md](docs/container-runtimes.md) for backend comparison.
 
 ## Quick Start
+
+### Docker (default)
 
 ```bash
 # Build the base image
@@ -14,9 +16,24 @@ docker build -t sandbox-base:latest docker/sandbox
 brew install circlesac/tap/sandbox
 # or: npx @circlesac/sandbox
 
-# Initialize and run
-sandbox init     # checks Docker, generates API key
+# Start (auto-generates API key on first run)
 sandbox serve    # starts the control plane on :49982
+```
+
+### Shuru (macOS, Apple Virtualization)
+
+```bash
+# Install shuru
+brew install shuru
+
+# Create sandbox checkpoint (see docs/container-runtimes.md)
+shuru checkpoint create sandbox-base --allow-net -- sh -c '...'
+
+# Set backend in ~/.sandbox/config.json
+# { "apiKey": "...", "backend": "shuru" }
+
+# Start
+sandbox serve
 ```
 
 ## Development

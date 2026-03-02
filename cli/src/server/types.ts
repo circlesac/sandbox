@@ -9,7 +9,7 @@ export interface SandboxLabels {
 
 export interface SandboxInfo {
   sandboxId: string;
-  containerId: string;
+  instanceId: string;
   accessToken: string;
   templateId: string;
   createdAt: string;

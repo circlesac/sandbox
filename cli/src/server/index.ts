@@ -1,11 +1,11 @@
 import { config } from "./config.ts";
 import { createApp } from "./app.ts";
 
-const { app, dockerService, sandboxService, ttlService } = createApp();
+const { app, backend, sandboxService, ttlService } = createApp();
 
 // TTL reconciliation on startup
 async function reconcileTtls() {
-  const sandboxes = await dockerService.listSandboxes({ state: "running" });
+  const sandboxes = await backend.listSandboxes({ state: "running" });
   for (const sb of sandboxes) {
     const elapsed = (Date.now() - new Date(sb.createdAt).getTime()) / 1000;
     const remaining = sb.timeoutSec - elapsed;

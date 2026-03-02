@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { config } from "./config.ts";
 import { authMiddleware } from "./middleware/auth.ts";
 import { resolveSandboxByToken } from "./services/proxy.ts";
 
@@ -20,23 +21,26 @@ import {
   SetSandboxTimeout,
   setSandboxService,
 } from "./controllers/sandboxes/index.ts";
-import { DockerService } from "./services/docker.ts";
+import { createBackend, type BackendType } from "./services/backend.ts";
 import { EnvdService } from "./services/envd.ts";
 import { SandboxService } from "./services/sandbox.ts";
 import { TtlService } from "./services/ttl.ts";
 import { handleProxyRequest } from "./services/proxy.ts";
 
-export function createApp() {
+export function createApp(opts?: { backendType?: BackendType }) {
   const app = new Hono();
 
   app.use("*", cors());
   app.use("*", logger());
 
   // Services
-  const dockerService = new DockerService();
+  const backend = createBackend(
+    opts?.backendType ?? (config.backend as BackendType),
+    { dockerSocket: config.dockerSocket },
+  );
   const envdService = new EnvdService();
   const ttlService = new TtlService();
-  const sandboxService = new SandboxService(dockerService, envdService, ttlService);
+  const sandboxService = new SandboxService(backend, envdService, ttlService);
   setSandboxService(sandboxService);
 
   // Data plane routing: proxy envd requests to sandbox containers
@@ -45,13 +49,13 @@ export function createApp() {
 
     // Route by Host header: {port}-{sandboxId}.{domain}
     if (/^\d+-sbx-/.test(host)) {
-      return handleProxyRequest(c, dockerService);
+      return handleProxyRequest(c, backend);
     }
 
     // Route by E2B SDK header (gRPC transport includes sandbox ID)
     const sandboxId = c.req.header("E2b-Sandbox-Id");
     if (sandboxId) {
-      return handleProxyRequest(c, dockerService, sandboxId);
+      return handleProxyRequest(c, backend, sandboxId);
     }
 
     // Route by access token (envd REST API — files, health)
@@ -59,7 +63,7 @@ export function createApp() {
     if (accessToken) {
       const resolvedId = resolveSandboxByToken(accessToken);
       if (resolvedId) {
-        return handleProxyRequest(c, dockerService, resolvedId);
+        return handleProxyRequest(c, backend, resolvedId);
       }
     }
 
@@ -104,5 +108,5 @@ export function createApp() {
   // E2B SDK v2 compat — SDK uses /v2/sandboxes for list
   openapi.get("/v2/sandboxes", ListSandboxes);
 
-  return { app, dockerService, sandboxService, ttlService };
+  return { app, backend, sandboxService, ttlService };
 }
