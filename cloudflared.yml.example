@@ -2,6 +2,8 @@ tunnel: <TUNNEL_UUID>
 credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
-  - hostname: <TUNNEL_HOSTNAME>
+  # Use a per-device hash to avoid hostname collisions across machines
+  # macOS: echo -n "$(ioreg -rd1 -c IOPlatformExpertDevice | grep IOPlatformSerialNumber | awk -F'\"' '{print $4}')" | shasum -a 256 | cut -c1-8
+  - hostname: sandbox-<DEVICE_HASH>.<YOUR_DOMAIN>
     service: http://localhost:49982
   - service: http_status:404
