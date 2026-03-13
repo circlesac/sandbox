@@ -34,6 +34,27 @@ export function parseEnvdHostname(
   return { sandboxId: match[1] };
 }
 
+/**
+ * Resolve a sandbox ID, falling back to the single running sandbox when the
+ * given ID doesn't match any container (e.g. the E2B SDK sends
+ * "debug_sandbox_id" in debug mode).
+ */
+export async function resolveSandboxId(
+  sandboxId: string,
+  backend: ContainerBackend,
+): Promise<string | null> {
+  // Fast path: exact match
+  const info = await backend.inspectSandbox(sandboxId);
+  if (info && info.state === "running") return sandboxId;
+
+  // Fallback: if only one sandbox is running, use it.
+  // This handles E2B SDK debug mode which sends sandboxId="debug_sandbox_id".
+  const running = await backend.listSandboxes({ state: "running" });
+  if (running.length === 1 && running[0]) return running[0].sandboxId;
+
+  return null;
+}
+
 export async function handleProxyRequest(
   c: Context,
   backend: ContainerBackend,
@@ -53,15 +74,30 @@ export async function handleProxyRequest(
   // Resolve host port (cached)
   let hostPort = portCache.get(sandboxId);
   if (!hostPort) {
-    const info = await backend.inspectSandbox(sandboxId);
-    if (!info || info.state !== "running") {
+    // Try exact match first, then fallback resolution
+    const resolved = await resolveSandboxId(sandboxId, backend);
+    if (!resolved) {
       return c.json(
         { code: 502, message: `Sandbox ${sandboxId} not available` },
         502,
       );
     }
-    hostPort = info.hostPort;
-    portCache.set(sandboxId, hostPort);
+    // If resolved to a different ID (fallback), update sandboxId
+    if (resolved !== sandboxId) {
+      sandboxId = resolved;
+      hostPort = portCache.get(sandboxId);
+    }
+    if (!hostPort) {
+      const info = await backend.inspectSandbox(sandboxId);
+      if (!info || info.state !== "running") {
+        return c.json(
+          { code: 502, message: `Sandbox ${sandboxId} not available` },
+          502,
+        );
+      }
+      hostPort = info.hostPort;
+      portCache.set(sandboxId, hostPort);
+    }
   }
 
   // Build target URL
