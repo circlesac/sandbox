@@ -52,11 +52,13 @@ describe.skipIf(skip)("Shuru E2B Smoke", { timeout: 180_000 }, () => {
 
   beforeAll(async () => {
     const port = await findFreePort();
+    const envdProxyPort = await findFreePort();
     const serverEntry = join(__dirname, "..", "..", "src", "server", "index.ts");
     serverProcess = spawn("bun", ["run", serverEntry], {
       env: {
         ...process.env,
         PORT: String(port),
+        ENVD_PROXY_PORT: String(envdProxyPort),
         API_KEYS: TEST_API_KEY,
         SANDBOX_BACKEND: "shuru",
       },
@@ -67,14 +69,14 @@ describe.skipIf(skip)("Shuru E2B Smoke", { timeout: 180_000 }, () => {
       process.stderr.write(`[shuru-server] ${data}`);
     });
 
-    await waitForHealth(port);
+    await waitForHealth(port, 60_000);
 
     opts = {
       apiUrl: `http://localhost:${port}`,
       apiKey: TEST_API_KEY,
       sandboxUrl: `http://localhost:${port}`,
     };
-  });
+  }, 60_000);
 
   afterAll(async () => {
     try {

@@ -35,7 +35,7 @@ Bun.serve({
 // Envd proxy listener (port 49983)
 // The E2B SDK in debug mode connects directly to localhost:49983.
 // This listener proxies those requests to the correct container's mapped port.
-if (config.port !== config.envdPort) {
+if (config.port !== config.envdProxyPort) {
   const envdProxy = new Hono();
   envdProxy.all("*", async (c) => {
     // Resolve sandbox from E2b-Sandbox-Id header, access token, or fallback
@@ -66,9 +66,9 @@ if (config.port !== config.envdPort) {
   });
 
   Bun.serve({
-    port: config.envdPort,
+    port: config.envdProxyPort,
     fetch: envdProxy.fetch,
   });
 
-  console.log(`Envd proxy listening on :${config.envdPort}`);
+  console.log(`Envd proxy listening on :${config.envdProxyPort}`);
 }

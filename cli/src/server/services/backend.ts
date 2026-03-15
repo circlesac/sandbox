@@ -1,8 +1,9 @@
 import type { SandboxInfo } from "../types.ts";
 import { DockerService } from "./docker.ts";
 import { ShuruBackend } from "./shuru.ts";
+import { TartBackend } from "./tart.ts";
 
-export type BackendType = "docker" | "shuru";
+export type BackendType = "docker" | "shuru" | "tart";
 
 export interface CreateContainerOpts {
   sandboxId: string;
@@ -47,6 +48,8 @@ export function createBackend(
       });
     case "shuru":
       return new ShuruBackend();
+    case "tart":
+      return new TartBackend();
     default:
       throw new Error(`Unknown backend: ${type satisfies never}`);
   }
