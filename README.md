@@ -95,27 +95,4 @@ graph LR
     Proxy --> |Process.Start<br>Filesystem.ListDir<br>/files, /health| Envd[envd<br>in sandbox]
 ```
 
-## Development
-
-```bash
-cd cli
-bun install
-bun run dev serve     # run server in dev mode
-npx vitest run        # unit + integration tests
-bun run typecheck
-```
-
-## Project Structure
-
-```
-cli/                  # Control plane server + CLI
-  src/server/         # Hono API server, sandbox service, proxy
-  src/server/services/
-    docker.ts         # Docker backend
-    shuru.ts          # Shuru backend
-    tart.ts           # Tart backend
-  test/               # Unit + integration tests
-envd-lite/            # Minimal envd for macOS VMs (Go, connectrpc)
-docker/sandbox/       # Docker base image
-docs/                 # Backend comparison docs
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and project structure.
