@@ -45,19 +45,24 @@ sandbox serve
 ### Tart (macOS VMs)
 
 ```bash
+# Install Tart and pull macOS base image (~24GB, one-time)
 brew install cirruslabs/cli/tart
 tart clone ghcr.io/cirruslabs/macos-sequoia-base:latest sandbox-base
 
-# Build envd-lite
-cd envd-lite && go build -o envd-lite .
+# Build envd-lite (requires Go, protoc)
+cd envd-lite
+go generate ./...        # generate protobuf Go code from upstream .proto files
+go build -o envd-lite .
 
-# Set backend
-# SANDBOX_BACKEND=tart sandbox serve
-# or: ~/.sandbox/config.json → { "backend": "tart" }
-sandbox serve
+# Start
+SANDBOX_BACKEND=tart sandbox serve
 ```
 
+Each sandbox clones the base VM, boots it, deploys envd-lite via SSH, and proxies the E2B SDK to it. VM creation takes ~30-60s depending on host CPU.
+
 ## Usage
+
+The E2B SDK works the same across all backends:
 
 ```typescript
 import Sandbox from "e2b";
@@ -81,17 +86,13 @@ await sandbox.kill();
 
 ## Architecture
 
-```
-E2B SDK ──→ Control Plane (:49982) ──→ Backend (Docker/Shuru/Tart)
-              │                            │
-              │  POST /sandboxes           │  container/VM lifecycle
-              │  DELETE /sandboxes/:id     │
-              │                            ▼
-              └──→ Envd Proxy ──────→ envd (in sandbox)
-                   connectrpc            │
-                   process/filesystem    │  Process.Start
-                   file REST API         │  Filesystem.ListDir
-                                         │  /files, /health
+```mermaid
+graph LR
+    SDK[E2B SDK] --> CP[Control Plane :49982]
+    CP --> |POST /sandboxes<br>DELETE /sandboxes/:id| Backend[Backend<br>Docker / Shuru / Tart]
+    Backend --> |container/VM lifecycle| Sandbox[Sandbox]
+    SDK --> |connectrpc| Proxy[Envd Proxy]
+    Proxy --> |Process.Start<br>Filesystem.ListDir<br>/files, /health| Envd[envd<br>in sandbox]
 ```
 
 ## Development
