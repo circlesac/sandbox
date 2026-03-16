@@ -54,34 +54,36 @@ cd envd-lite
 go generate ./...        # generate protobuf Go code from upstream .proto files
 go build -o envd-lite .
 
-# Start
-SANDBOX_BACKEND=tart sandbox serve
+# Start with macOS support alongside Docker
+SANDBOX_MACOS_BACKEND=tart sandbox serve
 ```
 
-Each sandbox clones the base VM, boots it, deploys envd-lite via SSH, and proxies the E2B SDK to it. VM creation takes ~30-60s depending on host CPU.
+Each macOS sandbox clones the base VM, boots it, deploys envd-lite via SSH, and proxies the E2B SDK to it. VM creation takes ~30-60s depending on host CPU.
 
 ## Usage
 
-The E2B SDK works the same across all backends:
+The E2B SDK works the same across all backends. Use `metadata.platform` to select the platform:
 
 ```typescript
 import Sandbox from "e2b";
 
-const sandbox = await Sandbox.create("base", {
+const opts = {
   apiUrl: "http://localhost:49982",
   apiKey: "sk-...",
+};
+
+// Linux sandbox (default)
+const linux = await Sandbox.create("base", opts);
+const result = await linux.commands.run("uname");
+// → "Linux"
+
+// macOS sandbox
+const macos = await Sandbox.create("base", {
+  ...opts,
+  metadata: { platform: "macos" },
 });
-
-// Run commands
-const result = await sandbox.commands.run("echo hello");
-console.log(result.stdout); // "hello\n"
-
-// File I/O
-await sandbox.files.write("/tmp/test.txt", "hello");
-const content = await sandbox.files.read("/tmp/test.txt");
-
-// Cleanup
-await sandbox.kill();
+const result2 = await macos.commands.run("sw_vers -productName");
+// → "macOS"
 ```
 
 ## Architecture

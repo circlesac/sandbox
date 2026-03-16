@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import type { ContainerBackend } from "./backend.ts";
+import type { BackendMap, ContainerBackend } from "./backend.ts";
 
 const portCache = new Map<string, number>();
 const tokenCache = new Map<string, string>(); // accessToken → sandboxId
@@ -41,15 +41,22 @@ export function parseEnvdHostname(
  */
 export async function resolveSandboxId(
   sandboxId: string,
-  backend: ContainerBackend,
+  backends: BackendMap,
 ): Promise<string | null> {
-  // Fast path: exact match
-  const info = await backend.inspectSandbox(sandboxId);
-  if (info && info.state === "running") return sandboxId;
+  const all = [backends.linux, backends.macos].filter(
+    (b): b is ContainerBackend => b != null,
+  );
 
-  // Fallback: if only one sandbox is running, use it.
+  // Fast path: exact match across all backends
+  for (const b of all) {
+    const info = await b.inspectSandbox(sandboxId);
+    if (info && info.state === "running") return sandboxId;
+  }
+
+  // Fallback: if only one sandbox is running across all backends, use it.
   // This handles E2B SDK debug mode which sends sandboxId="debug_sandbox_id".
-  const running = await backend.listSandboxes({ state: "running" });
+  const results = await Promise.all(all.map((b) => b.listSandboxes({ state: "running" })));
+  const running = results.flat();
   if (running.length === 1 && running[0]) return running[0].sandboxId;
 
   return null;
@@ -57,7 +64,7 @@ export async function resolveSandboxId(
 
 export async function handleProxyRequest(
   c: Context,
-  backend: ContainerBackend,
+  backends: BackendMap,
   sandboxIdOverride?: string,
 ): Promise<Response> {
   let sandboxId = sandboxIdOverride;
@@ -75,7 +82,7 @@ export async function handleProxyRequest(
   let hostPort = portCache.get(sandboxId);
   if (!hostPort) {
     // Try exact match first, then fallback resolution
-    const resolved = await resolveSandboxId(sandboxId, backend);
+    const resolved = await resolveSandboxId(sandboxId, backends);
     if (!resolved) {
       return c.json(
         { code: 502, message: `Sandbox ${sandboxId} not available` },
@@ -88,15 +95,24 @@ export async function handleProxyRequest(
       hostPort = portCache.get(sandboxId);
     }
     if (!hostPort) {
-      const info = await backend.inspectSandbox(sandboxId);
-      if (!info || info.state !== "running") {
+      // Search all backends for this sandbox
+      const all = [backends.linux, backends.macos].filter(
+        (b): b is ContainerBackend => b != null,
+      );
+      for (const b of all) {
+        const info = await b.inspectSandbox(sandboxId);
+        if (info && info.state === "running") {
+          hostPort = info.hostPort;
+          portCache.set(sandboxId, hostPort);
+          break;
+        }
+      }
+      if (!hostPort) {
         return c.json(
           { code: 502, message: `Sandbox ${sandboxId} not available` },
           502,
         );
       }
-      hostPort = info.hostPort;
-      portCache.set(sandboxId, hostPort);
     }
   }
 

@@ -43,21 +43,19 @@ export function createApp(opts?: { backendType?: BackendType; macosBackendType?:
   const ttlService = new TtlService();
   const sandboxService = new SandboxService(backends, envdService, ttlService);
   setSandboxService(sandboxService);
-  const backend = sandboxService.backend;
-
   // Data plane routing: proxy envd requests to sandbox containers
   app.use("*", async (c, next) => {
     const host = c.req.header("host") ?? "";
 
     // Route by Host header: {port}-{sandboxId}.{domain}
     if (/^\d+-sbx-/.test(host)) {
-      return handleProxyRequest(c, backend);
+      return handleProxyRequest(c, backends);
     }
 
     // Route by E2B SDK header (gRPC transport includes sandbox ID)
     const sandboxId = c.req.header("E2b-Sandbox-Id");
     if (sandboxId) {
-      return handleProxyRequest(c, backend, sandboxId);
+      return handleProxyRequest(c, backends, sandboxId);
     }
 
     // Route by access token (envd REST API — files, health)
@@ -65,7 +63,7 @@ export function createApp(opts?: { backendType?: BackendType; macosBackendType?:
     if (accessToken) {
       const resolvedId = resolveSandboxByToken(accessToken);
       if (resolvedId) {
-        return handleProxyRequest(c, backend, resolvedId);
+        return handleProxyRequest(c, backends, resolvedId);
       }
     }
 
@@ -110,5 +108,5 @@ export function createApp(opts?: { backendType?: BackendType; macosBackendType?:
   // E2B SDK v2 compat — SDK uses /v2/sandboxes for list
   openapi.get("/v2/sandboxes", ListSandboxes);
 
-  return { app, backend, backends, sandboxService, ttlService };
+  return { app, backends, sandboxService, ttlService };
 }

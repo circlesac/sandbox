@@ -3,7 +3,7 @@ import { createApp } from "./app.ts";
 import { handleProxyRequest, resolveSandboxByToken, resolveSandboxId } from "./services/proxy.ts";
 import { Hono } from "hono";
 
-const { app, backend, backends, sandboxService, ttlService } = createApp();
+const { app, backends, sandboxService, ttlService } = createApp();
 
 // TTL reconciliation on startup
 async function reconcileTtls() {
@@ -51,11 +51,11 @@ if (config.port !== config.envdProxyPort) {
 
     // Resolve to a real sandbox (handles "debug_sandbox_id" and missing IDs)
     const resolved = sandboxId
-      ? await resolveSandboxId(sandboxId, backend)
+      ? await resolveSandboxId(sandboxId, backends)
       : null;
 
     // If still unresolved, try to find the single running sandbox
-    const finalId = resolved ?? (await resolveSandboxId("", backend));
+    const finalId = resolved ?? (await resolveSandboxId("", backends));
 
     if (!finalId) {
       return c.json(
@@ -64,7 +64,7 @@ if (config.port !== config.envdProxyPort) {
       );
     }
 
-    return handleProxyRequest(c, backend, finalId);
+    return handleProxyRequest(c, backends, finalId);
   });
 
   Bun.serve({
