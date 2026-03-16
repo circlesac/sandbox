@@ -4,4 +4,4 @@
 cloudflared.yml
 cloudflared-credentials.json
 sandbox-config.json
-envd/envd-lite
+envd-lite/envd-lite

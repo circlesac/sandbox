@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -256,8 +255,7 @@ func (s *processService) Start(ctx context.Context, req *connect.Request[procpb.
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("process config required"))
 	}
 
-	args := []string{"-l", "-c", buildCmdStr(cfg)}
-	cmd := exec.CommandContext(ctx, "/bin/bash", args...)
+	cmd := exec.CommandContext(ctx, cfg.Cmd, cfg.Args...)
 
 	if cfg.Cwd != nil {
 		cmd.Dir = *cfg.Cwd
@@ -293,7 +291,11 @@ func (s *processService) Start(ctx context.Context, req *connect.Request[procpb.
 	s.procs[pid] = &runningProc{cmd: cmd, stdin: stdin, tag: tag, config: cfg}
 	s.mu.Unlock()
 
+	// Mutex to serialize stream.Send calls (not concurrency-safe)
+	var sendMu sync.Mutex
+
 	// Send start event
+	sendMu.Lock()
 	stream.Send(&procpb.StartResponse{
 		Event: &procpb.ProcessEvent{
 			Event: &procpb.ProcessEvent_Start{
@@ -301,61 +303,56 @@ func (s *processService) Start(ctx context.Context, req *connect.Request[procpb.
 			},
 		},
 	})
+	sendMu.Unlock()
 
-	// Stream stdout/stderr
-	done := make(chan struct{})
+	// Collect all stdout/stderr then send — avoids streaming race conditions
+	// where fast-completing processes lose their first output chunk.
+	var stdoutBuf, stderrBuf []byte
+	done := make(chan struct{}, 2)
+
 	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := stdoutR.Read(buf)
-			if n > 0 {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				stream.Send(&procpb.StartResponse{
-					Event: &procpb.ProcessEvent{
-						Event: &procpb.ProcessEvent_Data{
-							Data: &procpb.ProcessEvent_DataEvent{
-								Output: &procpb.ProcessEvent_DataEvent_Stdout{Stdout: data},
-							},
-						},
-					},
-				})
-			}
-			if err != nil {
-				break
-			}
-		}
+		stdoutBuf, _ = io.ReadAll(stdoutR)
 		done <- struct{}{}
 	}()
 
 	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := stderrR.Read(buf)
-			if n > 0 {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				stream.Send(&procpb.StartResponse{
-					Event: &procpb.ProcessEvent{
-						Event: &procpb.ProcessEvent_Data{
-							Data: &procpb.ProcessEvent_DataEvent{
-								Output: &procpb.ProcessEvent_DataEvent_Stderr{Stderr: data},
-							},
-						},
-					},
-				})
-			}
-			if err != nil {
-				break
-			}
-		}
+		stderrBuf, _ = io.ReadAll(stderrR)
 		done <- struct{}{}
 	}()
 
-	// Wait for reader goroutines to finish (they'll EOF when process exits)
 	<-done
 	<-done
 	err := cmd.Wait()
+
+	// Send collected stdout
+	if len(stdoutBuf) > 0 {
+		sendMu.Lock()
+		stream.Send(&procpb.StartResponse{
+			Event: &procpb.ProcessEvent{
+				Event: &procpb.ProcessEvent_Data{
+					Data: &procpb.ProcessEvent_DataEvent{
+						Output: &procpb.ProcessEvent_DataEvent_Stdout{Stdout: stdoutBuf},
+					},
+				},
+			},
+		})
+		sendMu.Unlock()
+	}
+
+	// Send collected stderr
+	if len(stderrBuf) > 0 {
+		sendMu.Lock()
+		stream.Send(&procpb.StartResponse{
+			Event: &procpb.ProcessEvent{
+				Event: &procpb.ProcessEvent_Data{
+					Data: &procpb.ProcessEvent_DataEvent{
+						Output: &procpb.ProcessEvent_DataEvent_Stderr{Stderr: stderrBuf},
+					},
+				},
+			},
+		})
+		sendMu.Unlock()
+	}
 
 	exitCode := int32(0)
 	exited := true
@@ -373,6 +370,7 @@ func (s *processService) Start(ctx context.Context, req *connect.Request[procpb.
 		}
 	}
 
+	sendMu.Lock()
 	stream.Send(&procpb.StartResponse{
 		Event: &procpb.ProcessEvent{
 			Event: &procpb.ProcessEvent_End{
@@ -385,6 +383,7 @@ func (s *processService) Start(ctx context.Context, req *connect.Request[procpb.
 			},
 		},
 	})
+	sendMu.Unlock()
 
 	s.mu.Lock()
 	delete(s.procs, pid)
@@ -477,13 +476,6 @@ func (s *processService) getProc(sel *procpb.ProcessSelector) *runningProc {
 		}
 	}
 	return nil
-}
-
-func buildCmdStr(cfg *procpb.ProcessConfig) string {
-	if len(cfg.Args) == 0 {
-		return cfg.Cmd
-	}
-	return cfg.Cmd + " " + strings.Join(cfg.Args, " ")
 }
 
 // ── Filesystem service (connectrpc) ──

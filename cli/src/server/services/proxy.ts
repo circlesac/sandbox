@@ -1,3 +1,4 @@
+import http from "node:http";
 import type { Context } from "hono";
 import type { ContainerBackend } from "./backend.ts";
 
@@ -111,28 +112,68 @@ export async function handleProxyRequest(
   // but keeps Content-Encoding header, confusing the downstream client
   headers.delete("accept-encoding");
 
+  // Use Node's http.request for proxying instead of Bun's fetch.
+  // Bun's fetch drops the first chunk of streaming responses when
+  // re-wrapping response.body into a new Response (connectrpc issue).
   try {
-    const response = await fetch(targetUrl, {
-      method: c.req.method,
-      headers,
-      body:
-        c.req.method !== "GET" && c.req.method !== "HEAD"
-          ? c.req.raw.body
-          : undefined,
-      duplex: "half",
+    const body =
+      c.req.method !== "GET" && c.req.method !== "HEAD"
+        ? Buffer.from(await c.req.arrayBuffer())
+        : undefined;
+
+    const proxyResponse = await new Promise<Response>((resolve, reject) => {
+      const parsedUrl = new URL(targetUrl);
+      const reqHeaders: Record<string, string> = {};
+      headers.forEach((v, k) => {
+        reqHeaders[k] = v;
+      });
+
+      const proxyReq = http.request(
+        {
+          hostname: parsedUrl.hostname,
+          port: Number(parsedUrl.port),
+          path: parsedUrl.pathname + parsedUrl.search,
+          method: c.req.method,
+          headers: reqHeaders,
+        },
+        (proxyRes) => {
+          const resHeaders = new Headers();
+          for (const [key, val] of Object.entries(proxyRes.headers)) {
+            if (
+              val &&
+              key !== "content-encoding" &&
+              key !== "content-length" &&
+              key !== "transfer-encoding"
+            ) {
+              const values = Array.isArray(val) ? val : [val];
+              for (const v of values) resHeaders.append(key, v);
+            }
+          }
+
+          const stream = new ReadableStream({
+            start(controller) {
+              proxyRes.on("data", (chunk: Buffer) => {
+                controller.enqueue(new Uint8Array(chunk));
+              });
+              proxyRes.on("end", () => controller.close());
+              proxyRes.on("error", (err) => controller.error(err));
+            },
+          });
+
+          resolve(
+            new Response(stream, {
+              status: proxyRes.statusCode ?? 502,
+              headers: resHeaders,
+            }),
+          );
+        },
+      );
+      proxyReq.on("error", reject);
+      if (body) proxyReq.write(body);
+      proxyReq.end();
     });
 
-    // Stream response back — strip content-encoding since Bun's fetch
-    // auto-decompresses but keeps the header, causing double-decompress
-    const responseHeaders = new Headers(response.headers);
-    responseHeaders.delete("content-encoding");
-    responseHeaders.delete("content-length");
-
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: responseHeaders,
-    });
+    return proxyResponse;
   } catch {
     // Connection failed — invalidate cache and retry once
     portCache.delete(sandboxId);

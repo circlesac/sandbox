@@ -38,7 +38,7 @@ function transferFile(ip: string, localPath: string, remotePath: string, timeout
 function envdLitePath(): string {
   // cli/src/server/services/tart.ts -> project root is 4 levels up
   const thisDir = dirname(fileURLToPath(import.meta.url));
-  return join(thisDir, "..", "..", "..", "..", "envd", "envd-lite");
+  return join(thisDir, "..", "..", "..", "..", "envd-lite", "envd-lite");
 }
 
 interface TartInstance {
@@ -84,8 +84,8 @@ function tartList(): TartVm[] {
   }
 }
 
-function tartIp(vmName: string, timeoutMs = 30_000): string {
-  return tartExec(["ip", vmName], timeoutMs);
+function tartIp(vmName: string, waitSec = 30): string {
+  return tartExec(["ip", "--wait", String(waitSec), vmName], (waitSec + 10) * 1000);
 }
 
 function findFreePort(): Promise<number> {
@@ -157,12 +157,11 @@ export class TartBackend implements ContainerBackend {
       stdio: ["ignore", "ignore", "ignore"],
     });
 
-    // Wait for VM to boot and get its IP (tart ip returns immediately with error if not ready)
+    // Wait for VM to boot and get its IP
     let vmIp: string | undefined;
-    for (let i = 0; i < 60; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
+    for (let i = 0; i < 4; i++) {
       try {
-        vmIp = tartIp(vmName, 10_000);
+        vmIp = tartIp(vmName, 30);
         if (vmIp) break;
       } catch {
         // VM not ready yet, retry
@@ -192,7 +191,7 @@ export class TartBackend implements ContainerBackend {
         await new Promise((r) => setTimeout(r, 2000));
       }
     }
-    transferFile(vmIp, envdLitePath(), "/tmp/envd-lite", 30_000);
+    transferFile(vmIp, envdLitePath(), "/tmp/envd-lite", 120_000);
     // Start envd-lite in background, listening on envdPort
     sshExec(vmIp, `nohup /tmp/envd-lite -port ${config.envdPort} > /tmp/envd-lite.log 2>&1 &`);
 
@@ -237,10 +236,9 @@ export class TartBackend implements ContainerBackend {
 
     // Wait for IP
     let vmIp: string | undefined;
-    for (let i = 0; i < 60; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
+    for (let i = 0; i < 4; i++) {
       try {
-        vmIp = tartIp(instance.vmName, 10_000);
+        vmIp = tartIp(instance.vmName, 30);
         if (vmIp) break;
       } catch {}
     }
