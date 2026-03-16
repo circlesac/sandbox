@@ -2,16 +2,16 @@
 
 ## Overview
 
-| | Docker | Shuru | Podman |
-|---|---|---|---|
-| **Technology** | Linux containers | macOS microVMs (Apple Virt) | Linux containers |
-| **Platform** | All | macOS only | All |
-| **Isolation** | Namespace/cgroup | Hardware VM | Namespace/cgroup |
-| **Pause/resume** | Yes | No (ephemeral) | Yes |
-| **Base image** | `docker build` | `shuru checkpoint create` | `docker build` |
-| **Status** | Default | Supported | Not implemented |
+| | Docker | Shuru | Tart | Podman |
+|---|---|---|---|---|
+| **Technology** | Linux containers | macOS microVMs (Apple Virt) | macOS VMs (Apple Virtualization) | Linux containers |
+| **Platform** | All | macOS only | macOS only | All |
+| **Isolation** | Namespace/cgroup | Hardware VM | Hardware VM | Namespace/cgroup |
+| **Pause/resume** | Yes | No (ephemeral) | Yes (suspend/resume) | Yes |
+| **Base image** | `docker build` | `shuru checkpoint create` | `tart clone` | `docker build` |
+| **Status** | Default | Supported | Supported | Not implemented |
 
-**Start with Docker.** Use Shuru on macOS for stronger isolation (each sandbox is a separate VM).
+**Start with Docker.** Use Shuru or Tart on macOS for stronger isolation (each sandbox is a separate VM).
 
 ## Shuru (macOS microVMs)
 
@@ -46,6 +46,33 @@ shuru checkpoint create sandbox-base --allow-net -- sh -c \
 **Configure:**
 ```json
 { "apiKey": "sk-sandbox-...", "backend": "shuru" }
+```
+(edit `~/.sandbox/config.json` after first `sandbox serve`)
+
+## Tart (macOS VMs)
+
+[Tart](https://github.com/cirruslabs/tart) uses Apple Virtualization Framework to run full macOS VMs (not Linux). Each sandbox gets a cloned VM with hardware-level isolation.
+
+**Key differences from Shuru:**
+- Runs macOS guests, not Alpine Linux
+- Uses `envd-lite` (Go) — a lightweight reimplementation of envd for macOS (original envd is Linux-only)
+- Supports suspend/resume — VMs persist across sandbox stop/start
+- VM creation takes ~30-60s (clone + boot + SSH deploy)
+
+**Sandbox lifecycle:** `tart clone` → `tart run` → SSH deploy envd-lite → TCP proxy to envd-lite port.
+
+**Default credentials:** `admin` / `admin` (standard Tart base image convention).
+
+**Base image setup:**
+
+```bash
+# Clone a macOS base image from the Tart registry
+tart clone ghcr.io/cirruslabs/macos-sequoia-base:latest sandbox-base
+```
+
+**Configure:**
+```json
+{ "apiKey": "sk-sandbox-...", "backend": "tart" }
 ```
 (edit `~/.sandbox/config.json` after first `sandbox serve`)
 
@@ -150,17 +177,22 @@ const docker = new Docker({ socketPath: '/run/podman/podman.sock' });
 
 ## Decision
 
-| Factor | Docker | Podman | Winner |
-|---|---|---|---|
-| Matches existing plan | Yes | Requires changes | Docker |
-| SDK maturity | Native | Compat layer | Docker |
-| Community resources | Vast | Growing | Docker |
-| Daemonless (no SPOF) | No | Yes | Podman |
-| Rootless security | Optional | Default | Podman |
-| systemd integration | Basic | Quadlet | Podman |
-| Switching cost | — | One line change | Tie |
+| Factor | Docker | Tart | Podman | Winner |
+|---|---|---|---|---|
+| Matches existing plan | Yes | macOS only | Requires changes | Docker |
+| SDK maturity | Native | Custom (envd-lite) | Compat layer | Docker |
+| Community resources | Vast | Moderate | Growing | Docker |
+| Daemonless (no SPOF) | No | Yes (per-VM process) | Yes | Tart/Podman |
+| Rootless security | Optional | Full VM isolation | Default | Tart |
+| macOS native guests | No | Yes | No | Tart |
+| systemd integration | Basic | N/A | Quadlet | Podman |
+| Switching cost | — | Backend config change | One line change | Tie |
 
-**Use Docker now. Evaluate Podman when:**
+**Use Docker now. Use Tart when:**
+- Running on macOS and need macOS-native sandboxes (e.g., Xcode, Swift)
+- Want full hardware VM isolation on Apple Silicon
+
+**Evaluate Podman when:**
 - Moving to multi-tenant model where sandbox isolation is critical
 - Want systemd-native lifecycle management instead of custom TTL logic
 - Running on systems where Docker is unavailable (RHEL 9+ ships Podman)

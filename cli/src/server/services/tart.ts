@@ -1,45 +1,9 @@
 import { execSync } from "node:child_process";
 import { createServer, type Socket } from "node:net";
 import { connect } from "node:net";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { config } from "../config.ts";
 import type { SandboxInfo } from "../types.ts";
 import type { ContainerBackend, CreateContainerOpts } from "./backend.ts";
-
-const SSH_USER = "admin";
-const SSH_PASS = "admin";
-const SSH_OPTS = [
-  "-o", "StrictHostKeyChecking=no",
-  "-o", "UserKnownHostsFile=/dev/null",
-  "-o", "LogLevel=ERROR",
-  "-o", "IdentitiesOnly=yes",
-  "-o", "PreferredAuthentications=password",
-];
-
-function sshExec(ip: string, cmd: string, timeoutMs = 30_000): string {
-  return execSync(
-    ["sshpass", "-p", SSH_PASS, "ssh", ...SSH_OPTS, `${SSH_USER}@${ip}`, cmd]
-      .map((a) => `'${a.replace(/'/g, "'\\''")}'`)
-      .join(" "),
-    { encoding: "utf-8", timeout: timeoutMs },
-  ).trim();
-}
-
-/** Transfer a file to the VM via SSH pipe (more reliable than scp) */
-function transferFile(ip: string, localPath: string, remotePath: string, timeoutMs = 30_000): void {
-  execSync(
-    `cat '${localPath}' | sshpass -p '${SSH_PASS}' ssh ${SSH_OPTS.join(" ")} '${SSH_USER}@${ip}' 'cat > ${remotePath} && chmod +x ${remotePath}'`,
-    { encoding: "utf-8", timeout: timeoutMs },
-  );
-}
-
-/** Path to the envd-lite binary, resolved relative to the project root */
-function envdLitePath(): string {
-  // cli/src/server/services/tart.ts -> project root is 4 levels up
-  const thisDir = dirname(fileURLToPath(import.meta.url));
-  return join(thisDir, "..", "..", "..", "..", "envd-lite", "envd-lite");
-}
 
 interface TartInstance {
   sandboxId: string;
@@ -181,19 +145,29 @@ export class TartBackend implements ContainerBackend {
       );
     }
 
-    // Deploy and start envd-lite inside the VM
-    // Wait for SSH to become available
-    for (let i = 0; i < 30; i++) {
+    // Wait for envd-lite to become healthy (pre-installed in base image via LaunchAgent)
+    let envdReady = false;
+    for (let i = 0; i < 60; i++) {
       try {
-        sshExec(vmIp, "true", 5000);
-        break;
+        const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
+        if (res.status === 204) {
+          envdReady = true;
+          break;
+        }
       } catch {
-        await new Promise((r) => setTimeout(r, 2000));
+        // not ready yet
       }
+      await new Promise((r) => setTimeout(r, 2000));
     }
-    transferFile(vmIp, envdLitePath(), "/tmp/envd-lite", 120_000);
-    // Start envd-lite in background, listening on envdPort
-    sshExec(vmIp, `nohup /tmp/envd-lite -port ${config.envdPort} > /tmp/envd-lite.log 2>&1 &`);
+
+    if (!envdReady) {
+      try { tartExec(["stop", vmName]); } catch {}
+      try { tartExec(["delete", vmName]); } catch {}
+      throw new Error(
+        `envd-lite in VM "${vmName}" did not become healthy within 120s. ` +
+        `Ensure envd-lite is pre-installed in the base image.`,
+      );
+    }
 
     // Set up a local TCP proxy forwarding to the VM's envd port
     const hostPort = await findFreePort();

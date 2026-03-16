@@ -97,8 +97,12 @@ describe("TartBackend", () => {
         )
         // clone call
         .mockReturnValueOnce("")
-        // tart ip call (after setTimeout)
+        // tart ip call
         .mockReturnValueOnce("192.168.64.5");
+
+      // Mock fetch for health check
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue({ status: 204 }) as unknown as typeof fetch;
 
       const result = await backend.createContainer({
         sandboxId: "sbx-test1",
@@ -106,6 +110,8 @@ describe("TartBackend", () => {
         templateId: "base",
         timeoutSec: 300,
       });
+
+      globalThis.fetch = originalFetch;
 
       expect(result.instanceId).toBe("sandbox-sbx-test1");
       expect(result.hostPort).toBe(mockPort);

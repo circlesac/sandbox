@@ -49,16 +49,17 @@ sandbox serve
 brew install cirruslabs/cli/tart
 tart clone ghcr.io/cirruslabs/macos-sequoia-base:latest sandbox-base
 
-# Build envd-lite (requires Go, protoc)
+# Build and install envd-lite into base image (one-time)
 cd envd-lite
-go generate ./...        # generate protobuf Go code from upstream .proto files
+go generate ./...
 go build -o envd-lite .
+# See CONTRIBUTING.md for base image setup with envd-lite pre-installed
 
 # Start with macOS support alongside Docker
 SANDBOX_MACOS_BACKEND=tart sandbox serve
 ```
 
-Each macOS sandbox clones the base VM, boots it, deploys envd-lite via SSH, and proxies the E2B SDK to it. VM creation takes ~30-60s depending on host CPU.
+envd-lite is pre-installed in the base image with a LaunchAgent, so each sandbox only needs to clone the VM and boot it. VM creation takes ~30-60s depending on host CPU.
 
 ## Usage
 
