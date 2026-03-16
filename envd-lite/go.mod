@@ -1,4 +1,4 @@
-module github.com/circlesac/sandbox/envd
+module github.com/circlesac/sandbox/envd-lite
 
 go 1.26.1
 
