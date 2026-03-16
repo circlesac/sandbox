@@ -1,16 +1,40 @@
 import { config } from "../config.ts";
 import { generateAccessToken, generateSandboxId } from "../lib/id.ts";
-import type { ContainerBackend } from "./backend.ts";
+import { resolvePlatform, type BackendMap, type ContainerBackend, type Platform } from "./backend.ts";
 import type { EnvdService } from "./envd.ts";
 import { registerToken, clearPortCache } from "./proxy.ts";
 import type { TtlService } from "./ttl.ts";
 
 export class SandboxService {
   constructor(
-    private backend: ContainerBackend,
+    private backends: BackendMap,
     private envd: EnvdService,
     private ttl: TtlService,
   ) {}
+
+  /** Single backend for backwards compat (proxy, TTL reconciliation). */
+  get backend(): ContainerBackend {
+    return this.backends.linux;
+  }
+
+  private backendFor(platform: Platform): ContainerBackend {
+    const b = this.backends[platform];
+    if (!b) {
+      throw new UnsupportedError(`No backend configured for platform "${platform}"`);
+    }
+    return b;
+  }
+
+  private backendForSandbox(sandboxId: string): ContainerBackend {
+    // Check all backends for this sandbox
+    // We rely on the sandboxId being unique across backends
+    return this._sandboxPlatform.get(sandboxId)
+      ? this.backendFor(this._sandboxPlatform.get(sandboxId)!)
+      : this.backends.linux;
+  }
+
+  // Track which platform each sandbox belongs to
+  private _sandboxPlatform = new Map<string, Platform>();
 
   async create(req: { templateID?: string; timeout?: number; envVars?: Record<string, string>; metadata?: Record<string, string> }) {
     const sandboxId = generateSandboxId();
@@ -20,8 +44,10 @@ export class SandboxService {
       req.timeout ?? config.defaultTimeoutSec,
       config.maxTimeoutSec,
     );
+    const platform = resolvePlatform(req.metadata);
+    const backend = this.backendFor(platform);
 
-    const { hostPort } = await this.backend.createContainer({
+    const { hostPort } = await backend.createContainer({
       sandboxId,
       accessToken,
       templateId,
@@ -30,14 +56,17 @@ export class SandboxService {
       metadata: req.metadata,
     });
 
+    this._sandboxPlatform.set(sandboxId, platform);
+
     try {
       await this.envd.waitForHealth(hostPort);
       await this.envd.init(hostPort, {
-        accessToken: this.backend.type === "docker" ? accessToken : undefined,
+        accessToken: backend.type === "docker" ? accessToken : undefined,
         envVars: req.envVars,
       });
     } catch (err) {
-      await this.backend.removeContainer(sandboxId);
+      await backend.removeContainer(sandboxId);
+      this._sandboxPlatform.delete(sandboxId);
       throw err;
     }
 
@@ -59,7 +88,8 @@ export class SandboxService {
   }
 
   async getInfo(sandboxId: string) {
-    const info = await this.backend.inspectSandbox(sandboxId);
+    const backend = this.backendForSandbox(sandboxId);
+    const info = await backend.inspectSandbox(sandboxId);
     if (!info) return null;
 
     const endAt = new Date(
@@ -81,33 +111,38 @@ export class SandboxService {
   async kill(sandboxId: string): Promise<boolean> {
     this.ttl.clear(sandboxId);
     clearPortCache(sandboxId);
-    return this.backend.removeContainer(sandboxId);
+    const backend = this.backendForSandbox(sandboxId);
+    const result = await backend.removeContainer(sandboxId);
+    this._sandboxPlatform.delete(sandboxId);
+    return result;
   }
 
   async pause(sandboxId: string): Promise<boolean> {
-    if (!this.backend.supportsPause) {
+    const backend = this.backendForSandbox(sandboxId);
+    if (!backend.supportsPause) {
       throw new UnsupportedError(
-        `Pause is not supported by the ${this.backend.type} backend`,
+        `Pause is not supported by the ${backend.type} backend`,
       );
     }
     this.ttl.clear(sandboxId);
-    return this.backend.stopContainer(sandboxId);
+    return backend.stopContainer(sandboxId);
   }
 
   async connect(
     sandboxId: string,
     timeoutSec?: number,
   ) {
-    const info = await this.backend.inspectSandbox(sandboxId);
+    const backend = this.backendForSandbox(sandboxId);
+    const info = await backend.inspectSandbox(sandboxId);
     if (!info) {
       throw new NotFoundError(`Sandbox ${sandboxId} not found`);
     }
 
-    const { hostPort } = await this.backend.startContainer(sandboxId);
+    const { hostPort } = await backend.startContainer(sandboxId);
 
     await this.envd.waitForHealth(hostPort);
     await this.envd.init(hostPort, {
-      accessToken: this.backend.type === "docker" ? info.accessToken : undefined,
+      accessToken: backend.type === "docker" ? info.accessToken : undefined,
       envVars: info.metadata ? undefined : undefined,
     });
 
@@ -131,7 +166,8 @@ export class SandboxService {
   }
 
   async setTimeout(sandboxId: string, timeoutSec: number): Promise<void> {
-    const info = await this.backend.inspectSandbox(sandboxId);
+    const backend = this.backendForSandbox(sandboxId);
+    const info = await backend.inspectSandbox(sandboxId);
     if (!info) {
       throw new NotFoundError(`Sandbox ${sandboxId} not found`);
     }
@@ -150,7 +186,15 @@ export class SandboxService {
       filters?.state === "running" || filters?.state === "paused"
         ? filters.state
         : undefined;
-    const sandboxes = await this.backend.listSandboxes({ state });
+
+    const allBackends = [this.backends.linux, this.backends.macos].filter(
+      (b): b is ContainerBackend => b != null,
+    );
+    const results = await Promise.all(
+      allBackends.map((b) => b.listSandboxes({ state })),
+    );
+    const sandboxes = results.flat();
+
     return sandboxes.map((info) => ({
       sandboxID: info.sandboxId,
       templateID: info.templateId,

@@ -58,7 +58,7 @@ describe("SandboxService", () => {
     envd = createMockEnvd();
     ttl = new TtlService();
     service = new SandboxService(
-      backend as unknown as ContainerBackend,
+      { linux: backend as unknown as ContainerBackend },
       envd as unknown as EnvdService,
       ttl,
     );

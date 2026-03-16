@@ -21,27 +21,29 @@ import {
   SetSandboxTimeout,
   setSandboxService,
 } from "./controllers/sandboxes/index.ts";
-import { createBackend, type BackendType } from "./services/backend.ts";
+import { createBackends, type BackendMap, type BackendType } from "./services/backend.ts";
 import { EnvdService } from "./services/envd.ts";
 import { SandboxService } from "./services/sandbox.ts";
 import { TtlService } from "./services/ttl.ts";
 import { handleProxyRequest } from "./services/proxy.ts";
 
-export function createApp(opts?: { backendType?: BackendType }) {
+export function createApp(opts?: { backendType?: BackendType; macosBackendType?: BackendType }) {
   const app = new Hono();
 
   app.use("*", cors());
   app.use("*", logger());
 
   // Services
-  const backend = createBackend(
-    opts?.backendType ?? (config.backend as BackendType),
-    { dockerSocket: config.dockerSocket },
-  );
+  const backends = createBackends({
+    linux: opts?.backendType ?? (config.backend as BackendType),
+    macos: opts?.macosBackendType ?? (config.macosBackend as BackendType | undefined),
+    dockerSocket: config.dockerSocket,
+  });
   const envdService = new EnvdService();
   const ttlService = new TtlService();
-  const sandboxService = new SandboxService(backend, envdService, ttlService);
+  const sandboxService = new SandboxService(backends, envdService, ttlService);
   setSandboxService(sandboxService);
+  const backend = sandboxService.backend;
 
   // Data plane routing: proxy envd requests to sandbox containers
   app.use("*", async (c, next) => {
@@ -108,5 +110,5 @@ export function createApp(opts?: { backendType?: BackendType }) {
   // E2B SDK v2 compat — SDK uses /v2/sandboxes for list
   openapi.get("/v2/sandboxes", ListSandboxes);
 
-  return { app, backend, sandboxService, ttlService };
+  return { app, backend, backends, sandboxService, ttlService };
 }

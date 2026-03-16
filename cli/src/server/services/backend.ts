@@ -4,6 +4,7 @@ import { ShuruBackend } from "./shuru.ts";
 import { TartBackend } from "./tart.ts";
 
 export type BackendType = "docker" | "shuru" | "tart";
+export type Platform = "linux" | "macos";
 
 export interface CreateContainerOpts {
   sandboxId: string;
@@ -53,4 +54,29 @@ export function createBackend(
     default:
       throw new Error(`Unknown backend: ${type satisfies never}`);
   }
+}
+
+/** Map of platform → backend. Linux is required, macOS is optional. */
+export interface BackendMap {
+  linux: ContainerBackend;
+  macos?: ContainerBackend;
+}
+
+export function createBackends(opts: {
+  linux: BackendType;
+  macos?: BackendType;
+  dockerSocket?: string;
+}): BackendMap {
+  return {
+    linux: createBackend(opts.linux, { dockerSocket: opts.dockerSocket }),
+    macos: opts.macos
+      ? createBackend(opts.macos, { dockerSocket: opts.dockerSocket })
+      : undefined,
+  };
+}
+
+export function resolvePlatform(
+  metadata?: Record<string, string>,
+): Platform {
+  return metadata?.platform === "macos" ? "macos" : "linux";
 }

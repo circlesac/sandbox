@@ -3,11 +3,13 @@ import { createApp } from "./app.ts";
 import { handleProxyRequest, resolveSandboxByToken, resolveSandboxId } from "./services/proxy.ts";
 import { Hono } from "hono";
 
-const { app, backend, sandboxService, ttlService } = createApp();
+const { app, backend, backends, sandboxService, ttlService } = createApp();
 
 // TTL reconciliation on startup
 async function reconcileTtls() {
-  const sandboxes = await backend.listSandboxes({ state: "running" });
+  const allBackends = [backends.linux, backends.macos].filter(Boolean);
+  const results = await Promise.all(allBackends.map((b) => b!.listSandboxes({ state: "running" })));
+  const sandboxes = results.flat();
   for (const sb of sandboxes) {
     const elapsed = (Date.now() - new Date(sb.createdAt).getTime()) / 1000;
     const remaining = sb.timeoutSec - elapsed;
