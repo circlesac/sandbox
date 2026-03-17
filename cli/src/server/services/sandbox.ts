@@ -125,6 +125,7 @@ export class SandboxService {
       );
     }
     this.ttl.clear(sandboxId);
+    clearPortCache(sandboxId);
     return backend.stopContainer(sandboxId);
   }
 

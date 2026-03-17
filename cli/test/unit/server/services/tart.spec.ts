@@ -104,6 +104,11 @@ describe("TartBackend", () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockResolvedValue({ status: 204 }) as unknown as typeof fetch;
 
+      // Speed up the initial boot delay (setTimeout)
+      vi.useRealTimers();
+      const originalSetTimeout = globalThis.setTimeout;
+      globalThis.setTimeout = ((fn: () => void, _ms?: number) => originalSetTimeout(fn, 0)) as typeof setTimeout;
+
       const result = await backend.createContainer({
         sandboxId: "sbx-test1",
         accessToken: "token-abc",
@@ -111,6 +116,7 @@ describe("TartBackend", () => {
         timeoutSec: 300,
       });
 
+      globalThis.setTimeout = originalSetTimeout;
       globalThis.fetch = originalFetch;
 
       expect(result.instanceId).toBe("sandbox-sbx-test1");
@@ -122,9 +128,9 @@ describe("TartBackend", () => {
         expect.objectContaining({ encoding: "utf-8" }),
       );
 
-      // Verify tart run was spawned
+      // Verify tart run was spawned with --suspendable
       expect(spawnMock).toHaveBeenCalledWith(
-        ["tart", "run", "sandbox-sbx-test1", "--no-graphics"],
+        ["tart", "run", "sandbox-sbx-test1", "--no-graphics", "--suspendable"],
         { stdio: ["ignore", "ignore", "ignore"] },
       );
     });

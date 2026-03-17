@@ -117,13 +117,16 @@ export class TartBackend implements ContainerBackend {
     tartExec(["clone", image, vmName], 120_000);
 
     // Start the VM in the background
-    const proc = Bun.spawn(["tart", "run", vmName, "--no-graphics"], {
+    const proc = Bun.spawn(["tart", "run", vmName, "--no-graphics", "--suspendable"], {
       stdio: ["ignore", "ignore", "ignore"],
     });
 
     // Wait for VM to boot and get its IP
+    // Initial delay to let the VM start booting before polling for IP
+    await new Promise((r) => setTimeout(r, 10_000));
+
     let vmIp: string | undefined;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 6; i++) {
       try {
         vmIp = tartIp(vmName, 30);
         if (vmIp) break;
@@ -141,7 +144,7 @@ export class TartBackend implements ContainerBackend {
         tartExec(["delete", vmName]);
       } catch {}
       throw new Error(
-        `Tart VM "${vmName}" failed to obtain an IP address within 60s`,
+        `Tart VM "${vmName}" failed to obtain an IP address within 190s`,
       );
     }
 
@@ -195,20 +198,18 @@ export class TartBackend implements ContainerBackend {
       throw new Error(`Sandbox "${sandboxId}" not found`);
     }
 
-    // Check if VM is already running
     const vms = tartList();
     const vm = vms.find((v) => v.name === instance.vmName);
+    const wasRunning = vm?.state === "running";
 
-    if (vm?.state === "running") {
-      return { hostPort: instance.hostPort };
+    if (!wasRunning) {
+      // Resume stopped/suspended VM
+      Bun.spawn(["tart", "run", instance.vmName, "--no-graphics", "--suspendable"], {
+        stdio: ["ignore", "ignore", "ignore"],
+      });
     }
 
-    // Resume stopped/suspended VM
-    const proc = Bun.spawn(["tart", "run", instance.vmName, "--no-graphics"], {
-      stdio: ["ignore", "ignore", "ignore"],
-    });
-
-    // Wait for IP
+    // Get IP (may have changed after resume)
     let vmIp: string | undefined;
     for (let i = 0; i < 4; i++) {
       try {
@@ -221,7 +222,18 @@ export class TartBackend implements ContainerBackend {
       throw new Error(`VM "${instance.vmName}" failed to get IP on resume`);
     }
 
-    // Recreate TCP proxy
+    // Wait for envd-lite to become healthy
+    for (let i = 0; i < 60; i++) {
+      try {
+        const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
+        if (res.status === 204) break;
+      } catch {
+        // not ready yet
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    // Recreate TCP proxy (previous one was closed on pause)
     instance.proxy?.close();
     const hostPort = await findFreePort();
     instance.proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
@@ -238,9 +250,10 @@ export class TartBackend implements ContainerBackend {
     instance.proxy = undefined;
 
     try {
-      tartExec(["stop", instance.vmName]);
+      tartExec(["suspend", instance.vmName], 60_000);
     } catch {
-      // already stopped
+      // fallback to stop if suspend fails
+      try { tartExec(["stop", instance.vmName]); } catch {}
     }
 
     return true;

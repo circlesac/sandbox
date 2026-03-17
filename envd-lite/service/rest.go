@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -162,8 +163,10 @@ func HandleFiles(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
+			// Use path as-is for single file upload.
+			// Only append filename if path looks like a directory (ends with /).
 			filePath := path
-			if part.FileName() != "" {
+			if strings.HasSuffix(path, "/") && part.FileName() != "" {
 				filePath = filepath.Join(path, part.FileName())
 			}
 
