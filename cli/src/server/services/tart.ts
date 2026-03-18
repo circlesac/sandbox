@@ -92,6 +92,12 @@ export class TartBackend implements ContainerBackend {
   readonly supportsPause = true;
   private instances = new Map<string, TartInstance>();
 
+  private vmIsSuspended(vmName: string): boolean {
+    const vms = tartList();
+    const vm = vms.find((v) => v.name === vmName);
+    return vm?.state === "suspended";
+  }
+
   async resolveImage(templateId: string): Promise<string> {
     const imageName =
       templateId === "base" ? "sandbox-base" : `sandbox-${templateId}`;
@@ -113,22 +119,31 @@ export class TartBackend implements ContainerBackend {
     const image = await this.resolveImage(opts.templateId);
     const vmName = `sandbox-${opts.sandboxId}`;
 
-    // Clone the template VM (can take a while for large macOS images)
+    // Clone the template VM (APFS COW — instant, ~0.1s)
     tartExec(["clone", image, vmName], 120_000);
 
-    // Start the VM in the background
-    const proc = Bun.spawn(["tart", "run", vmName, "--no-graphics", "--suspendable"], {
+    // Check if the cloned VM has a suspended state (for fast resume)
+    const isSuspended = this.vmIsSuspended(vmName);
+
+    // Start the VM in the background (resume if suspended, cold boot otherwise)
+    Bun.spawn(["tart", "run", vmName, "--no-graphics", "--suspendable"], {
       stdio: ["ignore", "ignore", "ignore"],
     });
 
-    // Wait for VM to boot and get its IP
-    // Initial delay to let the VM start booting before polling for IP
-    await new Promise((r) => setTimeout(r, 10_000));
+    if (!isSuspended) {
+      // Cold boot: wait 10s before polling for IP
+      await new Promise((r) => setTimeout(r, 10_000));
+    } else {
+      // Suspended resume: IP available almost instantly, short delay for VM state restore
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
 
     let vmIp: string | undefined;
-    for (let i = 0; i < 6; i++) {
+    const maxRetries = isSuspended ? 3 : 6;
+    const ipWaitSec = isSuspended ? 10 : 30;
+    for (let i = 0; i < maxRetries; i++) {
       try {
-        vmIp = tartIp(vmName, 30);
+        vmIp = tartIp(vmName, ipWaitSec);
         if (vmIp) break;
       } catch {
         // VM not ready yet, retry
@@ -150,7 +165,8 @@ export class TartBackend implements ContainerBackend {
 
     // Wait for envd-lite to become healthy (pre-installed in base image via LaunchAgent)
     let envdReady = false;
-    for (let i = 0; i < 60; i++) {
+    const envdMaxRetries = isSuspended ? 15 : 60;
+    for (let i = 0; i < envdMaxRetries; i++) {
       try {
         const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
         if (res.status === 204) {
@@ -160,7 +176,7 @@ export class TartBackend implements ContainerBackend {
       } catch {
         // not ready yet
       }
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, isSuspended ? 500 : 2000));
     }
 
     if (!envdReady) {
