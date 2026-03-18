@@ -45,6 +45,14 @@ export class CreateSandbox extends OpenAPIRoute {
 
   override async handle(c: Context) {
     const body = await c.req.json();
+    const isAsync = c.req.query("async") === "true";
+
+    if (isAsync) {
+      // Return immediately with sandbox ID, boot in background
+      const partial = await sandboxService.createAsync(body);
+      return c.json(partial, 202);
+    }
+
     const result = await sandboxService.create(body);
     return c.json(result, 201);
   }
