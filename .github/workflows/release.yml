@@ -30,10 +30,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-latest
+          - os: [self-hosted, macos]
             bun_target: bun-darwin-arm64
             name: sandbox-darwin-arm64
-          - os: macos-latest
+          - os: [self-hosted, macos]
             bun_target: bun-darwin-x64
             name: sandbox-darwin-amd64
           - os: ubuntu-latest
