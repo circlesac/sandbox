@@ -122,6 +122,19 @@ export class TartBackend implements ContainerBackend {
     // Clone the template VM (APFS COW — instant, ~0.1s)
     tartExec(["clone", image, vmName], 120_000);
 
+    // Register instance immediately to prevent orphan cleanup from deleting it
+    const instance: TartInstance = {
+      sandboxId: opts.sandboxId,
+      vmName,
+      hostPort: 0,
+      accessToken: opts.accessToken,
+      templateId: opts.templateId,
+      createdAt: new Date().toISOString(),
+      timeoutSec: opts.timeoutSec,
+      metadata: opts.metadata,
+    };
+    this.instances.set(opts.sandboxId, instance);
+
     // Check if the cloned VM has a suspended state (for fast resume)
     const isSuspended = this.vmIsSuspended(vmName);
 
@@ -152,6 +165,7 @@ export class TartBackend implements ContainerBackend {
 
     if (!vmIp) {
       // Cleanup on failure
+      this.instances.delete(opts.sandboxId);
       try {
         tartExec(["stop", vmName]);
       } catch {}
@@ -180,6 +194,7 @@ export class TartBackend implements ContainerBackend {
     }
 
     if (!envdReady) {
+      this.instances.delete(opts.sandboxId);
       try { tartExec(["stop", vmName]); } catch {}
       try { tartExec(["delete", vmName]); } catch {}
       throw new Error(
@@ -192,18 +207,9 @@ export class TartBackend implements ContainerBackend {
     const hostPort = await findFreePort();
     const proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
 
-    const instance: TartInstance = {
-      sandboxId: opts.sandboxId,
-      vmName,
-      hostPort,
-      accessToken: opts.accessToken,
-      templateId: opts.templateId,
-      createdAt: new Date().toISOString(),
-      timeoutSec: opts.timeoutSec,
-      metadata: opts.metadata,
-      proxy,
-    };
-    this.instances.set(opts.sandboxId, instance);
+    // Update instance with runtime info (was registered early to prevent orphan cleanup)
+    instance.hostPort = hostPort;
+    instance.proxy = proxy;
 
     return { instanceId: vmName, hostPort };
   }
@@ -337,6 +343,15 @@ export class TartBackend implements ContainerBackend {
         continue;
       }
 
+      // VM shut itself down (runner finished) → clean up
+      if (vm.state === "stopped") {
+        console.log(`VM "${instance.vmName}" stopped (runner finished), cleaning up`);
+        try { tartExec(["delete", instance.vmName]); } catch {}
+        instance.proxy?.close();
+        dead.push(id);
+        continue;
+      }
+
       const state: "running" | "paused" =
         vm.state === "running" ? "running" : "paused";
 
@@ -357,6 +372,20 @@ export class TartBackend implements ContainerBackend {
 
     for (const id of dead) {
       this.instances.delete(id);
+    }
+
+    // Clean orphaned VMs not in instance map (e.g. from previous process)
+    for (const vm of vms) {
+      if (vm.name.startsWith("sandbox-sbx-") && !this.instances.has(vm.name.replace("sandbox-", ""))) {
+        if (vm.state === "stopped" || vm.state === "suspended") {
+          console.log(`Orphaned VM "${vm.name}" (${vm.state}), deleting`);
+          try { tartExec(["delete", vm.name]); } catch {}
+        } else if (vm.state === "running") {
+          console.log(`Orphaned VM "${vm.name}" running, stopping + deleting`);
+          try { tartExec(["stop", vm.name]); } catch {}
+          try { tartExec(["delete", vm.name]); } catch {}
+        }
+      }
     }
 
     return results;

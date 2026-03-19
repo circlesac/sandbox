@@ -26,6 +26,18 @@ async function reconcileTtls() {
 
 reconcileTtls().catch(console.error);
 
+// Periodic reconciliation — clean stopped VMs + expired TTLs every 30s
+setInterval(async () => {
+  try {
+    // listSandboxes triggers stopped VM cleanup in TartBackend
+    const allBackends = [backends.linux, backends.macos].filter(Boolean);
+    await Promise.all(allBackends.map((b) => b!.listSandboxes()));
+    await reconcileTtls();
+  } catch (e) {
+    console.error("Reconciliation error:", e);
+  }
+}, 30_000);
+
 // Main control plane + data plane proxy (port 49982)
 console.log(`Control plane listening on :${config.port}`);
 

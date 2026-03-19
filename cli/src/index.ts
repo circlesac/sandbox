@@ -8,6 +8,7 @@ const commands: Record<
 > = {
   serve: () => import("./commands/serve.ts"),
   status: () => import("./commands/status.ts"),
+  service: () => import("./commands/service.ts"),
 };
 
 function printHelp() {
@@ -15,7 +16,8 @@ function printHelp() {
 
 Commands:
   serve     Run the control plane server
-  status    Show stack health and running sandboxes`);
+  status    Show stack health and running sandboxes
+  service   Manage launchd service (install/uninstall/status)`);
 }
 
 if (!command || command === "--help" || command === "-h") {
