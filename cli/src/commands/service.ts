@@ -22,7 +22,9 @@ function getBinaryPath(): string {
 function buildPlist(binaryPath: string): string {
   const config = readConfig();
 
-  const envVars: Record<string, string> = {};
+  const envVars: Record<string, string> = {
+    PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+  };
   if (config?.apiKey) envVars.API_KEYS = config.apiKey;
   if (config?.backend) envVars.SANDBOX_BACKEND = config.backend;
 
