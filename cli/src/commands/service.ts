@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -8,8 +8,6 @@ const LABEL = "com.sandbox.serve";
 const PLIST_PATH = join(homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
 const LOG_DIR = join(SANDBOX_DIR, "logs");
 
-// Service mode uses dedicated ports to avoid conflicts with dev `sandbox serve`
-const SERVICE_PORT = 49980;
 
 function getBinaryPath(): string {
   // Prefer the linked binary in PATH
@@ -24,13 +22,11 @@ function getBinaryPath(): string {
 function buildPlist(binaryPath: string): string {
   const config = readConfig();
 
-  const envVars: Record<string, string> = {
-    PORT: String(SERVICE_PORT),
-  };
+  const envVars: Record<string, string> = {};
   if (config?.apiKey) envVars.API_KEYS = config.apiKey;
   if (config?.backend) envVars.SANDBOX_BACKEND = config.backend;
 
-  // Forward relevant env vars if set (PORT excluded — always use SERVICE_PORT)
+  // Forward relevant env vars if set
   for (const key of [
     "SANDBOX_MACOS_BACKEND",
     "DOCKER_SOCKET",

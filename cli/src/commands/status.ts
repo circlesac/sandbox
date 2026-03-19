@@ -2,6 +2,8 @@ import { readConfig } from "../lib/config.ts";
 import { exec } from "../lib/exec.ts";
 import { isDockerRunning } from "../lib/checks.ts";
 
+const PORT = 49982;
+
 export async function run(_args: string[]) {
   const config = readConfig();
   if (!config) {
@@ -31,7 +33,7 @@ export async function run(_args: string[]) {
 
   let health = "unreachable";
   try {
-    const res = await fetch("http://localhost:49982/health", {
+    const res = await fetch(`http://localhost:${PORT}/health`, {
       signal: AbortSignal.timeout(2000),
     });
     health = res.ok ? "healthy" : `unhealthy (${res.status})`;
@@ -39,9 +41,9 @@ export async function run(_args: string[]) {
     // unreachable
   }
 
-  if (backend === "shuru" && health === "healthy") {
+  if (health === "healthy") {
     try {
-      const res = await fetch("http://localhost:49982/sandboxes", {
+      const res = await fetch(`http://localhost:${PORT}/sandboxes`, {
         headers: { "X-API-Key": config.apiKey },
         signal: AbortSignal.timeout(2000),
       });
