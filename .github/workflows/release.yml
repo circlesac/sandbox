@@ -60,6 +60,12 @@ jobs:
       - name: Build
         run: cd cli && bun build --compile --target=${{ matrix.bun_target }} src/index.ts --outfile sandbox
 
+      - name: Re-sign darwin binary
+        if: startsWith(matrix.bun_target, 'bun-darwin')
+        run: |
+          codesign --remove-signature cli/sandbox
+          codesign --force --deep -s - cli/sandbox
+
       - name: Package
         run: tar czf ${{ matrix.name }}.tar.gz -C cli sandbox
 
