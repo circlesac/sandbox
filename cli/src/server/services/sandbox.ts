@@ -145,7 +145,7 @@ export class SandboxService {
     registerToken(accessToken, sandboxId);
 
     this.ttl.start(sandboxId, timeoutSec, () => {
-      this.kill(sandboxId).catch(console.error);
+      this.pauseOrKill(sandboxId).catch(console.error);
     });
 
     return {
@@ -201,6 +201,15 @@ export class SandboxService {
     return backend.stopContainer(sandboxId);
   }
 
+  /** Idle-timeout callback: pause if the backend supports it, otherwise fall back to kill. */
+  async pauseOrKill(sandboxId: string): Promise<boolean> {
+    const backend = this.backendForSandbox(sandboxId);
+    if (backend.supportsPause) {
+      return this.pause(sandboxId);
+    }
+    return this.kill(sandboxId);
+  }
+
   async connect(
     sandboxId: string,
     timeoutSec?: number,
@@ -224,7 +233,7 @@ export class SandboxService {
       config.maxTimeoutSec,
     );
     this.ttl.start(sandboxId, timeout, () => {
-      this.kill(sandboxId).catch(console.error);
+      this.pauseOrKill(sandboxId).catch(console.error);
     });
 
     return {

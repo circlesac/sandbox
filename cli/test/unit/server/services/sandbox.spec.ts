@@ -128,6 +128,38 @@ describe("SandboxService", () => {
     });
   });
 
+  describe("pauseOrKill", () => {
+    it("pauses when backend supports pause", async () => {
+      await service.pauseOrKill("sbx-test");
+      expect(backend.stopContainer).toHaveBeenCalledWith("sbx-test");
+      expect(backend.removeContainer).not.toHaveBeenCalled();
+    });
+
+    it("kills when backend does not support pause", async () => {
+      (backend as unknown as { supportsPause: boolean }).supportsPause = false;
+      await service.pauseOrKill("sbx-test");
+      expect(backend.removeContainer).toHaveBeenCalledWith("sbx-test");
+      expect(backend.stopContainer).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("idle timeout", () => {
+    it("pauses sandbox on timeout when backend supports pause", async () => {
+      await service.create({ templateID: "base", timeout: 10 });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(backend.stopContainer).toHaveBeenCalled();
+      expect(backend.removeContainer).not.toHaveBeenCalled();
+    });
+
+    it("kills sandbox on timeout when backend does not support pause", async () => {
+      (backend as unknown as { supportsPause: boolean }).supportsPause = false;
+      await service.create({ templateID: "base", timeout: 10 });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(backend.removeContainer).toHaveBeenCalled();
+      expect(backend.stopContainer).not.toHaveBeenCalled();
+    });
+  });
+
   describe("connect", () => {
     it("starts container, waits for health, inits envd", async () => {
       const result = await service.connect("sbx-test123");
