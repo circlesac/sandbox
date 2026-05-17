@@ -152,8 +152,8 @@ export class TartBackend implements ContainerBackend {
     }
 
     let vmIp: string | undefined;
-    const maxRetries = isSuspended ? 3 : 6;
-    const ipWaitSec = isSuspended ? 10 : 30;
+    const maxRetries = isSuspended ? 2 : 6;
+    const ipWaitSec = isSuspended ? 3 : 30;
     for (let i = 0; i < maxRetries; i++) {
       try {
         vmIp = tartIp(vmName, ipWaitSec);
@@ -179,7 +179,8 @@ export class TartBackend implements ContainerBackend {
 
     // Wait for envd-lite to become healthy (pre-installed in base image via LaunchAgent)
     let envdReady = false;
-    const envdMaxRetries = isSuspended ? 15 : 60;
+    const envdMaxRetries = isSuspended ? 30 : 60;
+    const envdPollMs = isSuspended ? 200 : 2000;
     for (let i = 0; i < envdMaxRetries; i++) {
       try {
         const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
@@ -190,7 +191,7 @@ export class TartBackend implements ContainerBackend {
       } catch {
         // not ready yet
       }
-      await new Promise((r) => setTimeout(r, isSuspended ? 500 : 2000));
+      await new Promise((r) => setTimeout(r, envdPollMs));
     }
 
     if (!envdReady) {
@@ -231,11 +232,12 @@ export class TartBackend implements ContainerBackend {
       });
     }
 
-    // Get IP (may have changed after resume)
+    // Get IP (may have changed after resume). Resume from suspended is fast,
+    // so use short waits — fail fast if anything is wrong.
     let vmIp: string | undefined;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 2; i++) {
       try {
-        vmIp = tartIp(instance.vmName, 30);
+        vmIp = tartIp(instance.vmName, 3);
         if (vmIp) break;
       } catch {}
     }
@@ -244,15 +246,15 @@ export class TartBackend implements ContainerBackend {
       throw new Error(`VM "${instance.vmName}" failed to get IP on resume`);
     }
 
-    // Wait for envd-lite to become healthy
-    for (let i = 0; i < 60; i++) {
+    // Wait for envd-lite to become healthy (suspended resume is near-instant)
+    for (let i = 0; i < 30; i++) {
       try {
         const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
         if (res.status === 204) break;
       } catch {
         // not ready yet
       }
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 200));
     }
 
     // Recreate TCP proxy (previous one was closed on pause)
