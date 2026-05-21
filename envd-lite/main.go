@@ -38,7 +38,7 @@ func main() {
 	)
 	mux.Handle(procPath, procHandler)
 
-	fsPath, fsHandler := fsrpc.NewFilesystemHandler(&service.FilesystemService{})
+	fsPath, fsHandler := fsrpc.NewFilesystemHandler(service.NewFilesystemService())
 	mux.Handle(fsPath, fsHandler)
 
 	handler := cors.New(cors.Options{
