@@ -35,22 +35,22 @@ describe("serve command", () => {
 
     expect(writeConfigMock).toHaveBeenCalledOnce();
     const written = writeConfigMock.mock.calls[0][0];
-    expect(written.apiKey).toMatch(/^sk-sandbox-/);
+    expect(written.apiKey).toMatch(/^e2b_/);
     expect(process.env.API_KEYS).toBe(written.apiKey);
   });
 
   it("reuses existing config", async () => {
-    readConfigMock.mockReturnValue({ apiKey: "sk-sandbox-abc" });
+    readConfigMock.mockReturnValue({ apiKey: "e2b_00000000000000" });
 
     await run([]);
 
     expect(writeConfigMock).not.toHaveBeenCalled();
-    expect(process.env.API_KEYS).toBe("sk-sandbox-abc");
+    expect(process.env.API_KEYS).toBe("e2b_00000000000000");
   });
 
   it("sets SANDBOX_BACKEND env var when backend is configured", async () => {
     readConfigMock.mockReturnValue({
-      apiKey: "sk-sandbox-abc",
+      apiKey: "e2b_00000000000000",
       backend: "shuru",
     });
 
@@ -61,7 +61,7 @@ describe("serve command", () => {
 
   it("does not set SANDBOX_BACKEND when backend is not configured", async () => {
     readConfigMock.mockReturnValue({
-      apiKey: "sk-sandbox-abc",
+      apiKey: "e2b_00000000000000",
     });
 
     await run([]);

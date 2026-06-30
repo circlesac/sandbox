@@ -70,7 +70,7 @@ import Sandbox from "e2b";
 
 const opts = {
   apiUrl: "http://localhost:49982",
-  apiKey: "sk-...",
+  apiKey: "e2b_.....",
 };
 
 // Linux sandbox (default)

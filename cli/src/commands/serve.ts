@@ -7,7 +7,7 @@ export async function run(_args: string[]) {
     let config = readConfig();
 
     if (!config) {
-      const apiKey = `sk-sandbox-${randomBytes(24).toString("hex")}`;
+      const apiKey = `e2b_${randomBytes(20).toString("hex")}`;
       config = { apiKey };
       writeConfig(config);
       console.log(`API Key: ${apiKey}\n`);
