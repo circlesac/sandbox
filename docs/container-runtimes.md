@@ -45,7 +45,7 @@ shuru checkpoint create sandbox-base --allow-net -- sh -c \
 
 **Configure:**
 ```json
-{ "apiKey": "sk-sandbox-...", "backend": "shuru" }
+{ "apiKey": "e2b_00000000000000...", "backend": "shuru" }
 ```
 (edit `~/.sandbox/config.json` after first `sandbox serve`)
 
@@ -72,7 +72,7 @@ tart clone ghcr.io/cirruslabs/macos-sequoia-base:latest sandbox-base
 
 **Configure:**
 ```json
-{ "apiKey": "sk-sandbox-...", "backend": "tart" }
+{ "apiKey": "e2b_...", "backend": "tart" }
 ```
 (edit `~/.sandbox/config.json` after first `sandbox serve`)
 

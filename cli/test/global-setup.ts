@@ -4,7 +4,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 
 const SERVER_INFO_PATH = "/tmp/sandbox-integration-test.json";
-const TEST_API_KEY = "sk-test-integration";
+const TEST_API_KEY = "e2b_0000000000000000000000000000000000000000";
 
 function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {

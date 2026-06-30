@@ -16,7 +16,6 @@ const opts = serverInfo
       apiUrl: `http://localhost:${serverInfo.port}`,
       apiKey: serverInfo.apiKey,
       sandboxUrl: `http://localhost:${serverInfo.port}`,
-      validateApiKey: false,
     }
   : undefined;
 

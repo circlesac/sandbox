@@ -73,7 +73,7 @@ Edit `~/.sandbox/config.json` to set the backend:
 
 ```json
 {
-  "apiKey": "sk-sandbox-...",
+  "apiKey": "e2b_.....",
   "backend": "shuru"
 }
 ```
