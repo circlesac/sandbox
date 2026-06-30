@@ -1,6 +1,7 @@
 {
   "name": "@circlesac/sandbox",
   "type": "module",
+  "version": "26.5.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/circlesac/sandbox.git",
@@ -21,18 +22,18 @@
     "lint": "npx @circlesac/lint --all"
   },
   "dependencies": {
-    "@asteasolutions/zod-to-openapi": "^8.4.1",
-    "chanfana": "^3.0.0",
-    "dockerode": "^4.0.9",
-    "hono": "^4.11.9",
-    "nanoid": "^5.1.6",
-    "zod": "^4.3.6"
+    "@asteasolutions/zod-to-openapi": "^8.5.0",
+    "chanfana": "^3.3.0",
+    "dockerode": "^5.0.1",
+    "hono": "^4.12.27",
+    "nanoid": "^5.1.16",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/dockerode": "^4.0.1",
-    "e2b": "^2.12.1",
-    "typescript": "^5",
-    "vitest": "^4.0.18"
+    "e2b": "^2.31.0",
+    "typescript": "^6",
+    "vitest": "^4.1.9"
   }
 }
