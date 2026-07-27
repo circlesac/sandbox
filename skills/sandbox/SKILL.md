@@ -1,8 +1,6 @@
 ---
-name: sandbox-guide
+name: sandbox
 description: Guide for using the E2B-compatible local sandbox with Docker or Shuru microVMs
-user-invocable: true
-argument-hint: "<question-about-sandbox>"
 ---
 
 # Sandbox
