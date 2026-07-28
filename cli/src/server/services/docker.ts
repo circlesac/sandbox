@@ -17,6 +17,8 @@ export class DockerService implements ContainerBackend {
   readonly type = "docker" as const;
   readonly supportsPause = true;
   private docker: Docker;
+  private timeoutStartedAt = new Map<string, string>();
+  private timeoutSeconds = new Map<string, number>();
 
   constructor(opts: { socketPath: string }) {
     this.docker = new Docker({ socketPath: opts.socketPath });
@@ -83,6 +85,7 @@ export class DockerService implements ContainerBackend {
     });
 
     await container.start();
+    this.timeoutStartedAt.set(opts.sandboxId, new Date().toISOString());
 
     const info = await container.inspect();
     const portBindings =
@@ -112,6 +115,8 @@ export class DockerService implements ContainerBackend {
     try {
       const container = this.docker.getContainer(sandboxId);
       await container.remove({ force: true });
+      this.timeoutStartedAt.delete(sandboxId);
+      this.timeoutSeconds.delete(sandboxId);
       return true;
     } catch (err: unknown) {
       if (isDockerNotFound(err)) return false;
@@ -123,6 +128,8 @@ export class DockerService implements ContainerBackend {
     try {
       const container = this.docker.getContainer(sandboxId);
       await container.stop();
+      this.timeoutStartedAt.delete(sandboxId);
+      this.timeoutSeconds.delete(sandboxId);
       return true;
     } catch (err: unknown) {
       if (isDockerNotFound(err)) return false;
@@ -141,6 +148,7 @@ export class DockerService implements ContainerBackend {
     } catch (err: unknown) {
       if (!isDockerNotModified(err)) throw err;
     }
+    this.timeoutStartedAt.set(sandboxId, new Date().toISOString());
 
     const info = await container.inspect();
     const portBindings =
@@ -156,6 +164,11 @@ export class DockerService implements ContainerBackend {
     return { hostPort };
   }
 
+  refreshTimeout(sandboxId: string, timeoutSec: number): void {
+    this.timeoutStartedAt.set(sandboxId, new Date().toISOString());
+    this.timeoutSeconds.set(sandboxId, timeoutSec);
+  }
+
   async listSandboxes(filters?: {
     state?: "running" | "paused";
   }): Promise<SandboxInfo[]> {
@@ -166,7 +179,9 @@ export class DockerService implements ContainerBackend {
 
     const results: SandboxInfo[] = [];
     for (const c of containers) {
-      const sandbox = this.parseContainerListInfo(c);
+      const sandbox = c.State === "running"
+        ? await this.docker.getContainer(c.Id).inspect().then((info) => this.parseContainerInfo(info))
+        : this.parseContainerListInfo(c);
       if (!sandbox) continue;
       if (filters?.state && sandbox.state !== filters.state) continue;
       results.push(sandbox);
@@ -185,8 +200,11 @@ export class DockerService implements ContainerBackend {
       instanceId: info.Id,
       accessToken: labels["e2b.access-token"] ?? "",
       templateId: labels["e2b.template-id"] ?? "base",
-      createdAt: labels["e2b.created-at"] ?? info.Created,
-      timeoutSec: Number(labels["e2b.timeout"] ?? config.defaultTimeoutSec),
+      createdAt: info.State.Running
+        ? this.timeoutStartedAt.get(labels["e2b.sandbox-id"] ?? info.Name.replace(/^\//, "")) ?? info.State.StartedAt
+        : labels["e2b.created-at"] ?? info.Created,
+      timeoutSec: this.timeoutSeconds.get(labels["e2b.sandbox-id"] ?? info.Name.replace(/^\//, ""))
+        ?? Number(labels["e2b.timeout"] ?? config.defaultTimeoutSec),
       hostPort,
       state: info.State.Running ? "running" : "paused",
       metadata: labels["e2b.metadata"]

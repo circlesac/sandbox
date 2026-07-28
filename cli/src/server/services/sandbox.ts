@@ -232,6 +232,7 @@ export class SandboxService {
       timeoutSec ?? config.defaultTimeoutSec,
       config.maxTimeoutSec,
     );
+    await backend.refreshTimeout?.(sandboxId, timeout);
     this.ttl.start(sandboxId, timeout, () => {
       this.pauseOrKill(sandboxId).catch(console.error);
     });
@@ -255,6 +256,7 @@ export class SandboxService {
     }
 
     const clamped = Math.min(timeoutSec, config.maxTimeoutSec);
+    await backend.refreshTimeout?.(sandboxId, clamped);
     this.ttl.update(sandboxId, clamped, () => {
       this.kill(sandboxId).catch(console.error);
     });

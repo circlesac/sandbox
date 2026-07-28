@@ -35,6 +35,7 @@ function createMockBackend(): ContainerBackend {
     removeContainer: vi.fn().mockResolvedValue(true),
     stopContainer: vi.fn().mockResolvedValue(true),
     startContainer: vi.fn().mockResolvedValue({ hostPort: 32769 }),
+    refreshTimeout: vi.fn(),
     listSandboxes: vi.fn().mockResolvedValue([]),
   } as unknown as ContainerBackend;
 }
@@ -167,6 +168,7 @@ describe("SandboxService", () => {
       expect(result.sandboxID).toBe("sbx-test123");
       expect(result.envdAccessToken).toBe("token-abc");
       expect(backend.startContainer).toHaveBeenCalledWith("sbx-test123");
+      expect(backend.refreshTimeout).toHaveBeenCalledWith("sbx-test123", 300);
       expect(envd.waitForHealth).toHaveBeenCalledWith(32769);
       expect(envd.init).toHaveBeenCalledOnce();
     });

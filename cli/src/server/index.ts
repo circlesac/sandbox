@@ -43,6 +43,7 @@ console.log(`Control plane listening on :${config.port}`);
 
 Bun.serve({
   port: config.port,
+  idleTimeout: 0,
   fetch: app.fetch,
 });
 
@@ -81,6 +82,7 @@ if (config.port !== config.envdProxyPort) {
 
   Bun.serve({
     port: config.envdProxyPort,
+    idleTimeout: 0,
     fetch: envdProxy.fetch,
   });
 
