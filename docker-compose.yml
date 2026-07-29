@@ -1,10 +1,45 @@
 services:
+  sandbox:
+    build: docker/server
+    network_mode: host
+    # Docker Desktop restores containers before its host-network forwarder is
+    # ready. Restart once per Docker VM boot after the forwarder has settled.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |-
+        if [ "$$(cat /proc/sys/kernel/random/boot_id)" != "$$(cat /root/.sandbox/docker-vm-boot-id 2>/dev/null)" ]; then
+          cp /proc/sys/kernel/random/boot_id /root/.sandbox/docker-vm-boot-id
+          sleep 12
+          exit 1
+        fi
+        exec /usr/local/bin/sandbox serve
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/.sandbox:/root/.sandbox
+    environment:
+      PORT: 49982
+    restart: always
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/49982;
+          printf 'GET /health HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+          grep -q -m1 '200 OK' <&3
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   cloudflared:
     image: cloudflare/cloudflared:latest
+    network_mode: host
     command: tunnel --config /etc/cloudflared/config.yml run
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./cloudflared.yml:/etc/cloudflared/config.yml:ro
       - ./cloudflared-credentials.json:/etc/cloudflared/credentials.json:ro
     restart: unless-stopped
+    depends_on:
+      sandbox:
+        condition: service_healthy
