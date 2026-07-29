@@ -35,7 +35,7 @@ sandbox serve
 
 To run the control plane itself in Docker on macOS, enable **Host networking**
 under Docker Desktop's **Settings → Resources → Network** and enable Docker at
-login. Then start only the sandbox service:
+login. Then start the sandbox service:
 
 ```bash
 docker build -t sandbox-base:latest docker/sandbox
@@ -88,19 +88,36 @@ envd-lite is pre-installed in the base image with a LaunchAgent, so each sandbox
 ### Public endpoint for a local control plane
 
 When a remote Padawan, Worker, or test runner needs to reach a local control
-plane, expose port `49982` with a stable per-device hostname. Derive the suffix
-from the Mac's hardware serial so multiple machines do not claim the same DNS
-record:
+plane, run `cloudflared` in the same Docker Compose project. Derive a stable
+per-device hostname from the Mac's hardware serial so multiple machines do not
+claim the same DNS record:
 
 ```bash
-DEVICE_HASH="$(printf '%s' "$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformSerialNumber/{print $4}')" | shasum -a 256 | cut -c1-8)"
-cgrok http 49982 --url "sandbox-${DEVICE_HASH}.crcl.es"
+SANDBOX_DEVICE_HASH="$(printf '%s' "$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformSerialNumber/{print $4}')" | shasum -a 256 | cut -c1-8)"
+SANDBOX_TUNNEL_NAME="sandbox-${SANDBOX_DEVICE_HASH}"
+SANDBOX_PUBLIC_HOSTNAME="sandbox-${SANDBOX_DEVICE_HASH}.crcl.es"
+
+# One-time Cloudflare setup. `login` writes the local management certificate;
+# the token file is the only credential mounted into the runtime container.
+cloudflared tunnel login
+cloudflared tunnel create "$SANDBOX_TUNNEL_NAME"
+cloudflared tunnel route dns "$SANDBOX_TUNNEL_NAME" "$SANDBOX_PUBLIC_HOSTNAME"
+cloudflared tunnel token "$SANDBOX_TUNNEL_NAME" > ~/.sandbox/cloudflared-tunnel-token
+chmod 600 ~/.sandbox/cloudflared-tunnel-token
+
+docker compose up -d cloudflared
+docker compose ps sandbox cloudflared
+curl -fsS "https://${SANDBOX_PUBLIC_HOSTNAME}/health"
 ```
 
-Use `https://sandbox-${DEVICE_HASH}.crcl.es` for both the E2B SDK's `apiUrl`
+The `cloudflared` container routes the tunnel to `http://localhost:49982`, uses
+host networking, waits for the sandbox health check, and has `restart: always`,
+so Docker Desktop restores both services after login or reboot. Never commit
+the token file or pass it on the command line.
+
+Use `https://sandbox-${SANDBOX_DEVICE_HASH}.crcl.es` for both the E2B SDK's `apiUrl`
 and `sandboxUrl`. This is a physical-device naming convention for the control
-plane, not a Docker-only or per-container hostname. Do not omit `--url` for a
-long-lived endpoint: cgrok otherwise generates a new random hostname.
+plane, not a Docker-only or per-container hostname.
 
 ## Usage
 

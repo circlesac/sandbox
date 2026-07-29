@@ -51,6 +51,7 @@ export default async function setup() {
     env: {
       ...process.env,
       PORT: String(port),
+      ENVD_PROXY_PORT: String(port),
       API_KEYS: TEST_API_KEY,
     },
     stdio: "pipe",

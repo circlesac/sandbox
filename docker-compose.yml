@@ -35,11 +35,22 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     network_mode: host
-    command: tunnel --config /etc/cloudflared/config.yml run
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token-file
+      - /run/secrets/tunnel-token
+      - --url
+      - http://localhost:49982
     volumes:
-      - ./cloudflared.yml:/etc/cloudflared/config.yml:ro
-      - ./cloudflared-credentials.json:/etc/cloudflared/credentials.json:ro
-    restart: unless-stopped
+      - type: bind
+        source: ${HOME}/.sandbox/cloudflared-tunnel-token
+        target: /run/secrets/tunnel-token
+        read_only: true
+        bind:
+          create_host_path: false
+    restart: always
     depends_on:
       sandbox:
         condition: service_healthy
