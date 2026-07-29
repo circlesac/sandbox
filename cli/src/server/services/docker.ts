@@ -1,4 +1,7 @@
 import Docker from "dockerode";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { config } from "../config.ts";
 import type { SandboxInfo, SandboxLabels } from "../types.ts";
 import type { ContainerBackend, CreateContainerOpts } from "./backend.ts";
@@ -13,15 +16,24 @@ function registryImageName(templateId: string) {
   return `${REGISTRY}/sandbox-${templateId}:latest`;
 }
 
+interface DockerTimeoutState {
+  startedAt: string;
+  timeoutSec: number;
+}
+
 export class DockerService implements ContainerBackend {
   readonly type = "docker" as const;
   readonly supportsPause = true;
   private docker: Docker;
-  private timeoutStartedAt = new Map<string, string>();
-  private timeoutSeconds = new Map<string, number>();
+  private timeoutState = new Map<string, DockerTimeoutState>();
+  private timeoutStatePath: string | null;
 
-  constructor(opts: { socketPath: string }) {
+  constructor(opts: { socketPath: string; statePath?: string | null }) {
     this.docker = new Docker({ socketPath: opts.socketPath });
+    this.timeoutStatePath = opts.statePath === undefined
+      ? join(homedir(), ".sandbox", "docker-timeouts.json")
+      : opts.statePath;
+    this.loadTimeoutState();
   }
 
   async resolveImage(templateId: string): Promise<string> {
@@ -85,7 +97,6 @@ export class DockerService implements ContainerBackend {
     });
 
     await container.start();
-    this.timeoutStartedAt.set(opts.sandboxId, new Date().toISOString());
 
     const info = await container.inspect();
     const portBindings =
@@ -115,28 +126,29 @@ export class DockerService implements ContainerBackend {
     try {
       const container = this.docker.getContainer(sandboxId);
       await container.remove({ force: true });
-      this.timeoutStartedAt.delete(sandboxId);
-      this.timeoutSeconds.delete(sandboxId);
-      return true;
     } catch (err: unknown) {
-      if (isDockerNotFound(err)) return false;
-      throw err;
+      if (!isDockerNotFound(err)) throw err;
+      this.clearTimeoutState(sandboxId);
+      return false;
     }
+    this.clearTimeoutState(sandboxId);
+    return true;
   }
 
   async stopContainer(sandboxId: string): Promise<boolean> {
     try {
       const container = this.docker.getContainer(sandboxId);
       await container.stop();
-      this.timeoutStartedAt.delete(sandboxId);
-      this.timeoutSeconds.delete(sandboxId);
-      return true;
     } catch (err: unknown) {
-      if (isDockerNotFound(err)) return false;
+      if (isDockerNotFound(err)) {
+        this.clearTimeoutState(sandboxId);
+        return false;
+      }
       // Already stopped
-      if (isDockerNotModified(err)) return true;
-      throw err;
+      if (!isDockerNotModified(err)) throw err;
     }
+    this.clearTimeoutState(sandboxId);
+    return true;
   }
 
   async startContainer(
@@ -148,7 +160,6 @@ export class DockerService implements ContainerBackend {
     } catch (err: unknown) {
       if (!isDockerNotModified(err)) throw err;
     }
-    this.timeoutStartedAt.set(sandboxId, new Date().toISOString());
 
     const info = await container.inspect();
     const portBindings =
@@ -165,8 +176,11 @@ export class DockerService implements ContainerBackend {
   }
 
   refreshTimeout(sandboxId: string, timeoutSec: number): void {
-    this.timeoutStartedAt.set(sandboxId, new Date().toISOString());
-    this.timeoutSeconds.set(sandboxId, timeoutSec);
+    this.timeoutState.set(sandboxId, {
+      startedAt: new Date().toISOString(),
+      timeoutSec,
+    });
+    this.persistTimeoutState();
   }
 
   async listSandboxes(filters?: {
@@ -178,14 +192,32 @@ export class DockerService implements ContainerBackend {
     });
 
     const results: SandboxInfo[] = [];
+    const present = new Set<string>();
     for (const c of containers) {
-      const sandbox = c.State === "running"
-        ? await this.docker.getContainer(c.Id).inspect().then((info) => this.parseContainerInfo(info))
-        : this.parseContainerListInfo(c);
+      const sandboxId = c.Labels["e2b.sandbox-id"];
+      if (sandboxId) present.add(sandboxId);
+
+      let sandbox: SandboxInfo | null;
+      try {
+        sandbox = c.State === "running"
+          ? await this.docker.getContainer(c.Id).inspect().then((info) => this.parseContainerInfo(info))
+          : this.parseContainerListInfo(c);
+      } catch (err: unknown) {
+        if (!isDockerNotFound(err)) throw err;
+        if (sandboxId) this.clearTimeoutState(sandboxId);
+        continue;
+      }
       if (!sandbox) continue;
       if (filters?.state && sandbox.state !== filters.state) continue;
       results.push(sandbox);
     }
+    let pruned = false;
+    for (const sandboxId of this.timeoutState.keys()) {
+      if (present.has(sandboxId)) continue;
+      this.timeoutState.delete(sandboxId);
+      pruned = true;
+    }
+    if (pruned) this.persistTimeoutState();
     return results;
   }
 
@@ -194,16 +226,20 @@ export class DockerService implements ContainerBackend {
     const portBindings =
       info.NetworkSettings.Ports[`${config.envdPort}/tcp`];
     const hostPort = Number(portBindings?.[0]?.HostPort) || 0;
+    const sandboxId = labels["e2b.sandbox-id"] ?? info.Name.replace(/^\//, "");
+    const timeout = info.State.Running
+      ? this.timeoutState.get(sandboxId)
+      : undefined;
 
     return {
-      sandboxId: labels["e2b.sandbox-id"] ?? info.Name.replace(/^\//, ""),
+      sandboxId,
       instanceId: info.Id,
       accessToken: labels["e2b.access-token"] ?? "",
       templateId: labels["e2b.template-id"] ?? "base",
       createdAt: info.State.Running
-        ? this.timeoutStartedAt.get(labels["e2b.sandbox-id"] ?? info.Name.replace(/^\//, "")) ?? info.State.StartedAt
+        ? timeout?.startedAt ?? info.State.StartedAt
         : labels["e2b.created-at"] ?? info.Created,
-      timeoutSec: this.timeoutSeconds.get(labels["e2b.sandbox-id"] ?? info.Name.replace(/^\//, ""))
+      timeoutSec: timeout?.timeoutSec
         ?? Number(labels["e2b.timeout"] ?? config.defaultTimeoutSec),
       hostPort,
       state: info.State.Running ? "running" : "paused",
@@ -236,6 +272,52 @@ export class DockerService implements ContainerBackend {
         ? JSON.parse(labels["e2b.metadata"])
         : undefined,
     };
+  }
+
+  private loadTimeoutState(): void {
+    if (!this.timeoutStatePath || !existsSync(this.timeoutStatePath)) return;
+    try {
+      const stored = JSON.parse(readFileSync(this.timeoutStatePath, "utf8"));
+      if (!stored || typeof stored !== "object" || Array.isArray(stored)) return;
+      for (const [sandboxId, value] of Object.entries(stored)) {
+        if (
+          value &&
+          typeof value === "object" &&
+          "startedAt" in value &&
+          typeof value.startedAt === "string" &&
+          !Number.isNaN(Date.parse(value.startedAt)) &&
+          "timeoutSec" in value &&
+          typeof value.timeoutSec === "number" &&
+          Number.isFinite(value.timeoutSec) &&
+          value.timeoutSec > 0
+        ) {
+          this.timeoutState.set(sandboxId, {
+            startedAt: value.startedAt,
+            timeoutSec: value.timeoutSec,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `Failed to read Docker timeout state: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private persistTimeoutState(): void {
+    if (!this.timeoutStatePath) return;
+    mkdirSync(dirname(this.timeoutStatePath), { recursive: true });
+    const tempPath = `${this.timeoutStatePath}.tmp`;
+    writeFileSync(
+      tempPath,
+      JSON.stringify(Object.fromEntries(this.timeoutState), null, 2) + "\n",
+    );
+    renameSync(tempPath, this.timeoutStatePath);
+  }
+
+  private clearTimeoutState(sandboxId: string): void {
+    if (!this.timeoutState.delete(sandboxId)) return;
+    this.persistTimeoutState();
   }
 }
 
