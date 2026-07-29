@@ -41,8 +41,11 @@ setInterval(async () => {
 // Main control plane + data plane proxy (port 49982)
 console.log(`Control plane listening on :${config.port}`);
 
+// Both listeners carry authenticated long-lived PTY streams. Bun's default
+// idle timeout would terminate a healthy session while it waits for input.
 Bun.serve({
   port: config.port,
+  idleTimeout: 0,
   fetch: app.fetch,
 });
 
@@ -81,6 +84,7 @@ if (config.port !== config.envdProxyPort) {
 
   Bun.serve({
     port: config.envdProxyPort,
+    idleTimeout: 0,
     fetch: envdProxy.fetch,
   });
 

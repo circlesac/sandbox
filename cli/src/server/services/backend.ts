@@ -27,6 +27,8 @@ export interface ContainerBackend {
 
   startContainer(sandboxId: string): Promise<{ hostPort: number }>;
 
+  refreshTimeout?(sandboxId: string, timeoutSec: number): Promise<void> | void;
+
   stopContainer(sandboxId: string): Promise<boolean>;
 
   removeContainer(sandboxId: string): Promise<boolean>;

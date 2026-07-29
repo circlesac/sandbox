@@ -266,6 +266,13 @@ export class TartBackend implements ContainerBackend {
     return { hostPort };
   }
 
+  refreshTimeout(sandboxId: string, timeoutSec: number): void {
+    const instance = this.instances.get(sandboxId);
+    if (!instance) return;
+    instance.createdAt = new Date().toISOString();
+    instance.timeoutSec = timeoutSec;
+  }
+
   async stopContainer(sandboxId: string): Promise<boolean> {
     const instance = this.instances.get(sandboxId);
     if (!instance) return false;

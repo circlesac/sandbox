@@ -34,7 +34,7 @@ describe("serve command", () => {
     await run([]);
 
     expect(writeConfigMock).toHaveBeenCalledOnce();
-    const written = writeConfigMock.mock.calls[0][0];
+    const written = writeConfigMock.mock.calls[0]![0];
     expect(written.apiKey).toMatch(/^sk-sandbox-/);
     expect(process.env.API_KEYS).toBe(written.apiKey);
   });
