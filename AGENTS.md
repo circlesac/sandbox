@@ -2,8 +2,8 @@
 
 Read `README.md` before changing or operating this repository.
 
-For a persistent macOS control plane, use the Docker Desktop Compose setup in
-the README. Do not replace it with `sandbox service install` or a host
+For a persistent macOS control plane, use the OrbStack Compose setup in the
+README. Do not replace it with `sandbox service install` or a host
 `sandbox serve` process unless the user explicitly asks for launchd.
 
 When exposing the local sandbox control plane, follow

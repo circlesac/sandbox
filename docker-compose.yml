@@ -1,18 +1,9 @@
 services:
   sandbox:
-    build: docker/server
+    build:
+      context: .
+      dockerfile: docker/server/Dockerfile
     network_mode: host
-    # Docker Desktop restores containers before its host-network forwarder is
-    # ready. Restart once per Docker VM boot after the forwarder has settled.
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |-
-        if [ "$$(cat /proc/sys/kernel/random/boot_id)" != "$$(cat /root/.sandbox/docker-vm-boot-id 2>/dev/null)" ]; then
-          cp /proc/sys/kernel/random/boot_id /root/.sandbox/docker-vm-boot-id
-          sleep 12
-          exit 1
-        fi
-        exec /usr/local/bin/sandbox serve
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/.sandbox:/root/.sandbox
