@@ -13,11 +13,7 @@ import {
 	registerSandboxRoutes,
 	setSandboxService,
 } from "./controllers/sandboxes/index.ts";
-import {
-	createBackends,
-	type BackendMap,
-	type BackendType,
-} from "./services/backend.ts";
+import { createBackends, type BackendType } from "./services/backend.ts";
 import { setSnapshotTemplateService } from "./controllers/sandboxes/extra.ts";
 import {
 	registerNotProvidedRoutes,
@@ -99,7 +95,8 @@ export function createApp(opts?: {
 	});
 
 	// Health (no auth)
-	app.get("/health", (c) => c.json({ status: "ok" }));
+	// The same body E2B's API answers with.
+	app.get("/health", (c) => c.text("Health check successful"));
 
 	// OpenAPI router
 	const openapi = fromHono(app, {

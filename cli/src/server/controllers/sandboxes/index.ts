@@ -1,6 +1,5 @@
 import { type fromHono, OpenAPIRoute } from "chanfana";
 import type { Context } from "hono";
-import { z } from "zod";
 import { errorResponse, requestContext } from "../http.ts";
 import {
 	ListSandboxesFiltered,

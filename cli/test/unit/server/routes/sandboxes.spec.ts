@@ -337,7 +337,7 @@ describe("sandbox controllers", () => {
 		});
 	});
 
-	describe("POST /sandboxes/:sandboxID/pause", () => {
+	describe("POST /sandboxes/:sandboxID/pause body", () => {
 		it("keeps memory unless the body asks for a filesystem-only pause", async () => {
 			await app.request("/sandboxes/sbx-test123/pause", { method: "POST" });
 			expect(service.pause).toHaveBeenLastCalledWith("sbx-test123", true);

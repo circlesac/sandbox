@@ -1,6 +1,7 @@
 import { config } from "../config.ts";
 import { NotFoundError, UnsupportedError } from "../errors.ts";
 import {
+	E2B_CLIENT_ID,
 	generateAccessToken,
 	generateImageSuffix,
 	generateSandboxId,
@@ -81,6 +82,16 @@ export class SandboxService {
 		return null;
 	}
 
+	/**
+	 * The stored ID for one a client sent. E2B clients may append an old client
+	 * ID (8 hex digits) after the sandbox ID: <sandboxId>-<clientId>.
+	 */
+	private async canonical(sandboxId: string): Promise<string> {
+		if (await this.locate(sandboxId)) return sandboxId;
+		const stripped = sandboxId.match(/^(.+)-[0-9a-f]{8}$/)?.[1];
+		return stripped && (await this.locate(stripped)) ? stripped : sandboxId;
+	}
+
 	private prepare(req: CreateRequest) {
 		const platform = resolvePlatform(req.metadata);
 		const backend = this.backendFor(platform);
@@ -159,7 +170,7 @@ export class SandboxService {
 		return {
 			sandboxID: p.sandboxId,
 			templateID: p.templateId,
-			clientID: p.sandboxId,
+			clientID: E2B_CLIENT_ID,
 			envdVersion,
 			envdAccessToken: p.lifecycle.secure ? p.accessToken : null,
 			trafficAccessToken: p.lifecycle.trafficAccessToken,
@@ -224,6 +235,7 @@ export class SandboxService {
 	}
 
 	async getInfo(sandboxId: string) {
+		sandboxId = await this.canonical(sandboxId);
 		const found = await this.locate(sandboxId);
 		if (!found) return null;
 		return this.detail(
@@ -236,7 +248,7 @@ export class SandboxService {
 		return {
 			sandboxID: info.sandboxId,
 			templateID: info.templateId,
-			clientID: info.sandboxId,
+			clientID: E2B_CLIENT_ID,
 			envdVersion,
 			domain: null,
 			startedAt: info.createdAt,
@@ -249,6 +261,7 @@ export class SandboxService {
 	}
 
 	async kill(sandboxId: string): Promise<boolean> {
+		sandboxId = await this.canonical(sandboxId);
 		this.ttl.clear(sandboxId);
 		clearPortCache(sandboxId);
 		const found = await this.locate(sandboxId);
@@ -263,6 +276,7 @@ export class SandboxService {
 	 * by default; false keeps only the filesystem.
 	 */
 	async pause(sandboxId: string, keepMemory = true): Promise<boolean> {
+		sandboxId = await this.canonical(sandboxId);
 		const found = await this.locate(sandboxId);
 		if (!found) return false;
 		const { backend } = found;
@@ -285,7 +299,7 @@ export class SandboxService {
 	async expire(sandboxId: string): Promise<void> {
 		try {
 			const found = await this.locate(sandboxId);
-			if (!found || found.info.state !== "running") return;
+			if (found?.info.state !== "running") return;
 			const { lifecycle } = found.info;
 			if (lifecycle.autoPause && found.backend.supportsPause) {
 				await this.pause(sandboxId, lifecycle.keepMemory);
@@ -302,6 +316,7 @@ export class SandboxService {
 		timeoutSec?: number,
 		ctx: RequestContext = {},
 	) {
+		sandboxId = await this.canonical(sandboxId);
 		const found = await this.locate(sandboxId);
 		if (!found) {
 			throw new NotFoundError(`Sandbox ${sandboxId} not found`);
@@ -359,6 +374,7 @@ export class SandboxService {
 	 * Concurrent requests share one resume. Returns whether the sandbox runs.
 	 */
 	async resumeForTraffic(sandboxId: string): Promise<boolean> {
+		sandboxId = await this.canonical(sandboxId);
 		const pending = this.resumes.get(sandboxId);
 		if (pending) return pending;
 
@@ -379,6 +395,7 @@ export class SandboxService {
 	 * Memory is not captured: a sandbox created from it starts its processes anew.
 	 */
 	async snapshot(sandboxId: string, opts: { name?: string; memory?: boolean }) {
+		sandboxId = await this.canonical(sandboxId);
 		const found = await this.locate(sandboxId);
 		if (!found) throw new NotFoundError(`Sandbox ${sandboxId} not found`);
 		const { backend } = found;
@@ -416,6 +433,7 @@ export class SandboxService {
 		opts: { timeout?: number; count?: number },
 		ctx: RequestContext = {},
 	) {
+		sandboxId = await this.canonical(sandboxId);
 		const count = opts.count ?? 1;
 		if (!Number.isInteger(count) || count < 1 || count > 100) {
 			throw new UnsupportedError("count must be an integer from 1 to 100");
@@ -469,6 +487,7 @@ export class SandboxService {
 	 * the sandbox is paused.
 	 */
 	async metrics(sandboxId: string) {
+		sandboxId = await this.canonical(sandboxId);
 		const found = await this.locate(sandboxId);
 		if (!found) throw new NotFoundError(`Sandbox ${sandboxId} not found`);
 		const { info, backend } = found;
@@ -501,6 +520,7 @@ export class SandboxService {
 	}
 
 	async setTimeout(sandboxId: string, timeoutSec: number): Promise<void> {
+		sandboxId = await this.canonical(sandboxId);
 		const found = await this.locate(sandboxId);
 		if (!found) {
 			throw new NotFoundError(`Sandbox ${sandboxId} not found`);

@@ -31,7 +31,8 @@ const readChunkSize = 4096
 var pidCounter atomic.Uint32
 
 type subscriber struct {
-	ch chan *procpb.ProcessEvent
+	ch   chan *procpb.ProcessEvent
+	gone chan struct{} // closed by unsubscribe
 }
 
 type runningProc struct {
@@ -50,19 +51,21 @@ type runningProc struct {
 	endOnce  sync.Once
 	endEvent *procpb.ProcessEvent
 	done     chan struct{}
+
+	// readers tracks the stdout/stderr pumps. cmd.Wait closes those pipes, so
+	// it must not run before they have read everything.
+	readers sync.WaitGroup
 }
 
-// publish fans out an event to all current subscribers (best-effort, drops on
-// slow consumers) and appends to the replay buffer trimmed to replayLimitBytes.
+// publish delivers an event to every current subscriber and appends it to the
+// replay buffer, trimmed to replayLimitBytes. Delivery never drops events: a
+// slow subscriber holds the output pump back, which fills the pipe and pauses
+// the process, as a terminal would. Unsubscribing releases a blocked send.
 func (p *runningProc) publish(ev *procpb.ProcessEvent) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	subs := make([]*subscriber, 0, len(p.subs))
 	for s := range p.subs {
-		select {
-		case s.ch <- ev:
-		default:
-		}
+		subs = append(subs, s)
 	}
 
 	size := eventSize(ev)
@@ -74,28 +77,47 @@ func (p *runningProc) publish(ev *procpb.ProcessEvent) {
 		p.replayBytes -= eventSize(drop)
 		p.replay = p.replay[1:]
 	}
+	p.mu.Unlock()
+
+	for _, s := range subs {
+		select {
+		case s.ch <- ev:
+		case <-s.gone:
+		}
+	}
 }
 
-func (p *runningProc) snapshotReplay() []*procpb.ProcessEvent {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	out := make([]*procpb.ProcessEvent, len(p.replay))
-	copy(out, p.replay)
-	return out
+func newSubscriber() *subscriber {
+	return &subscriber{ch: make(chan *procpb.ProcessEvent, 64), gone: make(chan struct{})}
 }
 
 func (p *runningProc) subscribe() *subscriber {
-	s := &subscriber{ch: make(chan *procpb.ProcessEvent, 64)}
+	s := newSubscriber()
 	p.mu.Lock()
 	p.subs[s] = struct{}{}
 	p.mu.Unlock()
 	return s
 }
 
+// subscribeWithReplay attaches a subscriber and snapshots the replay buffer in
+// one step, so every event is either replayed or delivered, never both.
+func (p *runningProc) subscribeWithReplay() (*subscriber, []*procpb.ProcessEvent) {
+	s := newSubscriber()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.subs[s] = struct{}{}
+	replay := make([]*procpb.ProcessEvent, len(p.replay))
+	copy(replay, p.replay)
+	return s, replay
+}
+
 func (p *runningProc) unsubscribe(s *subscriber) {
 	p.mu.Lock()
-	delete(p.subs, s)
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	if _, ok := p.subs[s]; ok {
+		delete(p.subs, s)
+		close(s.gone)
+	}
 }
 
 func eventSize(ev *procpb.ProcessEvent) int {
@@ -133,10 +155,11 @@ func (s *ProcessService) Start(ctx context.Context, req *connect.Request[procpb.
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("process config required"))
 	}
 
-	proc, err := s.spawn(cfg, req.Msg.Pty, req.Msg.Tag)
+	proc, sub, err := s.spawn(cfg, req.Msg.Pty, req.Msg.Tag)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
+	defer proc.unsubscribe(sub)
 
 	startEv := &procpb.ProcessEvent{
 		Event: &procpb.ProcessEvent_Start{
@@ -146,9 +169,6 @@ func (s *ProcessService) Start(ctx context.Context, req *connect.Request[procpb.
 	if err := stream.Send(&procpb.StartResponse{Event: startEv}); err != nil {
 		return err
 	}
-
-	sub := proc.subscribe()
-	defer proc.unsubscribe(sub)
 
 	for {
 		select {
@@ -180,8 +200,10 @@ func (s *ProcessService) Start(ctx context.Context, req *connect.Request[procpb.
 
 // spawn launches a process (PTY or pipe-based) and registers it in the
 // service's process table. The output reader goroutines publish data events
-// to subscribers and append to the replay buffer.
-func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, tagPtr *string) (*runningProc, error) {
+// to subscribers and append to the replay buffer. The returned subscriber is
+// attached before the process starts, so it sees every event, even from a
+// process that exits at once.
+func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, tagPtr *string) (*runningProc, *subscriber, error) {
 	cmd := exec.Command(cfg.Cmd, cfg.Args...)
 
 	if cfg.Cwd != nil {
@@ -208,6 +230,7 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 		subs:   make(map[*subscriber]struct{}),
 		done:   make(chan struct{}),
 	}
+	sub := proc.subscribe()
 
 	if ptyCfg != nil {
 		size := &pty.Winsize{Cols: 80, Rows: 24}
@@ -222,7 +245,7 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 		// pty.StartWithSize sets Setsid:true and gives the child a controlling tty.
 		ptmx, err := pty.StartWithSize(cmd, size)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		proc.ptyFile = ptmx
 		proc.stdin = ptmx
@@ -234,20 +257,21 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		stdoutR, err := cmd.StdoutPipe()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		stderrR, err := cmd.StderrPipe()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := cmd.Start(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		proc.stdin = stdin
+		proc.readers.Add(2)
 		go s.readStream(proc, stdoutR, true)
 		go s.readStream(proc, stderrR, false)
 	}
@@ -257,10 +281,11 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 	s.mu.Unlock()
 
 	go s.reap(proc)
-	return proc, nil
+	return proc, sub, nil
 }
 
 func (s *ProcessService) readStream(proc *runningProc, r io.ReadCloser, isStdout bool) {
+	defer proc.readers.Done()
 	buf := make([]byte, readChunkSize)
 	for {
 		n, err := r.Read(buf)
@@ -309,6 +334,7 @@ func (s *ProcessService) readPTY(proc *runningProc, ptmx *os.File) {
 }
 
 func (s *ProcessService) reap(proc *runningProc) {
+	proc.readers.Wait()
 	err := proc.cmd.Wait()
 
 	if proc.ptyFile != nil {
@@ -477,11 +503,10 @@ func (s *ProcessService) Connect(ctx context.Context, req *connect.Request[procp
 		return err
 	}
 
-	sub := proc.subscribe()
+	sub, replay := proc.subscribeWithReplay()
 	defer proc.unsubscribe(sub)
 
-	// Replay buffered events (snapshot taken after subscribing to avoid gaps).
-	for _, ev := range proc.snapshotReplay() {
+	for _, ev := range replay {
 		if err := stream.Send(&procpb.ConnectResponse{Event: ev}); err != nil {
 			return err
 		}

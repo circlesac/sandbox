@@ -108,6 +108,12 @@ describe.skipIf(!opts)("E2B lifecycle and ports", { timeout: 120_000 }, () => {
 		expect(byHost.status).toBe(200);
 		expect(byHost.body).toBe("hello from the sandbox");
 
+		// E2B hosts may add an old client ID after the sandbox ID.
+		const withClientId = await viaHost(
+			`${APP_PORT}-${sandbox.sandboxId}-6532622b.localhost:${serverInfo?.port}`,
+		);
+		expect(withClientId.body).toBe("hello from the sandbox");
+
 		const byHeaders = await viaHeaders(sandbox.sandboxId, APP_PORT);
 		expect(await byHeaders.text()).toBe("hello from the sandbox");
 
@@ -129,6 +135,25 @@ describe.skipIf(!opts)("E2B lifecycle and ports", { timeout: 120_000 }, () => {
 		expect((await sandbox.files.read("/home/user/upload.bin")).length).toBe(
 			100_000,
 		);
+	});
+
+	it("serves a port that listens only on loopback, as E2B does", async () => {
+		const sandbox = await Sandbox.create("base", opts);
+		created.push(sandbox.sandboxId);
+		await sandbox.files.write("/tmp/local/index.html", "loopback only");
+		await sandbox.commands.run(
+			"python -m http.server 3210 --bind 127.0.0.1 --directory /tmp/local",
+			{ background: true },
+		);
+		const res = await waitFor(
+			async () => {
+				const r = await viaHeaders(sandbox.sandboxId, 3210);
+				return r.status === 200 ? r : undefined;
+			},
+			15_000,
+			"the loopback-only server",
+		);
+		expect(await res.text()).toBe("loopback only");
 	});
 
 	it("kills a sandbox on timeout by default and never brings it back", async () => {

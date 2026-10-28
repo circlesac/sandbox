@@ -175,6 +175,93 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 		});
 	});
 
+	// ── envd-lite, ports, lifecycle ────────────────────────────
+
+	describe("envd-lite, ports, and lifecycle", () => {
+		const serveOk = (port: number) =>
+			`while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\nConnection: close\\r\\n\\r\\nok' | nc -l ${port}; done`;
+		const viaHeaders = (
+			id: string,
+			port: number,
+			headers: Record<string, string> = {},
+		) =>
+			fetch(`${opts.apiUrl}/`, {
+				headers: {
+					"E2b-Sandbox-Id": id,
+					"E2b-Sandbox-Port": String(port),
+					...headers,
+				},
+			});
+		async function waitForOk(id: string, port: number) {
+			for (let i = 0; i < 60; i++) {
+				const res = await viaHeaders(id, port).catch(() => null);
+				if (res?.status === 200) return res;
+				await new Promise((r) => setTimeout(r, 500));
+			}
+			throw new Error(`port ${port} never answered`);
+		}
+
+		it("reports envd-lite's API version", async () => {
+			const info = await Sandbox.getInfo(sandbox.sandboxId, opts);
+			expect(info.envdVersion).toBe("0.5.3");
+		});
+
+		it("rejects envd requests without the access token", async () => {
+			const res = await fetch(`${opts.apiUrl}/files?path=/tmp/test.txt`, {
+				headers: { "E2b-Sandbox-Id": sandbox.sandboxId },
+			});
+			expect(res.status).toBe(401);
+		});
+
+		it("reports the VM's resource use", async () => {
+			const [sample] = await sandbox.getMetrics();
+			expect(sample?.cpuCount).toBeGreaterThan(0);
+			expect(sample?.memTotal).toBeGreaterThan(0);
+		});
+
+		it("serves a port opened inside the VM", async () => {
+			await sandbox.commands.run(serveOk(3000), { background: true });
+			const res = await waitForOk(sandbox.sandboxId, 3000);
+			expect(await res.text()).toBe("ok");
+		});
+
+		it("suspends on timeout keeping processes, and resumes on traffic", async () => {
+			const resumable = await Sandbox.create("base", {
+				...opts,
+				timeoutMs: 30_000,
+				lifecycle: { onTimeout: "pause", autoResume: true },
+			});
+			try {
+				await resumable.commands.run(serveOk(3001), { background: true });
+				await waitForOk(resumable.sandboxId, 3001);
+
+				for (let i = 0; ; i++) {
+					const info = await Sandbox.getInfo(resumable.sandboxId, opts);
+					if (info.state === "paused") break;
+					if (i > 120) throw new Error("the sandbox never paused");
+					await new Promise((r) => setTimeout(r, 1000));
+				}
+
+				const res = await waitForOk(resumable.sandboxId, 3001);
+				expect(await res.text()).toBe("ok");
+				expect((await Sandbox.getInfo(resumable.sandboxId, opts)).state).toBe(
+					"running",
+				);
+			} finally {
+				await resumable.kill().catch(() => {});
+			}
+		});
+
+		it("rejects a filesystem-only auto-pause, which Tart cannot do", async () => {
+			await expect(
+				Sandbox.create("base", {
+					...opts,
+					lifecycle: { onTimeout: { action: "pause", keepMemory: false } },
+				} as never),
+			).rejects.toThrow(/autoPauseMemory: false on the tart backend/);
+		});
+	});
+
 	// ── Cleanup ────────────────────────────────────────────────
 
 	describe("Cleanup", () => {

@@ -740,3 +740,32 @@ func (r *streamReader) Read(p []byte) (int, error) {
 	}
 	return 0, nil
 }
+
+// A command that prints faster than the client reads must not lose output.
+func TestStart_ChattyOutputIsComplete(t *testing.T) {
+	client, _, stop := newProcessTestServer(t)
+	defer stop()
+	stream, err := client.Start(context.Background(), connect.NewRequest(&procpb.StartRequest{
+		Process: &procpb.ProcessConfig{Cmd: "/bin/sh", Args: []string{"-c", "seq 1 200000"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, _ := collectStart(t, stream)
+	var out strings.Builder
+	ended := false
+	for _, ev := range events {
+		switch e := ev.Event.(type) {
+		case *procpb.ProcessEvent_Data:
+			if s, ok := e.Data.Output.(*procpb.ProcessEvent_DataEvent_Stdout); ok {
+				out.Write(s.Stdout)
+			}
+		case *procpb.ProcessEvent_End:
+			ended = true
+		}
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if len(lines) != 200000 || lines[0] != "1" || lines[len(lines)-1] != "200000" || !ended {
+		t.Fatalf("got %d lines (first %q, last %q), ended=%v", len(lines), lines[0], lines[len(lines)-1], ended)
+	}
+}

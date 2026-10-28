@@ -18,6 +18,7 @@ import type {
 import type { SandboxLifecycle } from "../../../../src/server/services/lifecycle.ts";
 import {
 	clearPortCache,
+	clearRoutes,
 	handleProxyRequest,
 	parseSandboxHost,
 	type ProxyRoute,
@@ -105,7 +106,7 @@ function setup(envdChecksAccessToken: boolean) {
 		resolveTarget: vi.fn(
 			async (id: string, port: number): Promise<ProxyTarget | null> => {
 				const sb = sandboxes.get(id);
-				if (!sb || sb.state !== "running") return null;
+				if (sb?.state !== "running") return null;
 				if (sb.unsupportedPorts && port !== ENVD) {
 					throw new UnsupportedError(
 						`Port ${port} is not reachable on the shuru backend`,
@@ -178,6 +179,36 @@ describe("handleProxyRequest", () => {
 		expect(received).toEqual([
 			{ method: "POST", url: "/api/x?y=1", body: "hello" },
 		]);
+	});
+
+	it("ignores an E2B client-ID suffix after the sandbox ID", async () => {
+		const { sandboxes, request } = setup(true);
+		sandboxes.set("sbx-a", { state: "running", lifecycle: lifecycle() });
+
+		const res = await request({ sandboxId: "sbx-a-6532622b", port: 3000 }, "/");
+		expect(res.status).toBe(200);
+		const legacy = await request(
+			{ sandboxId: "sbx-a-00000000", port: 3000 },
+			"/",
+		);
+		expect(legacy.status).toBe(200);
+	});
+
+	it("re-resolves a suffixed route after its sandbox pauses", async () => {
+		const { sandboxes, request } = setup(true);
+		sandboxes.set("sbx-a", {
+			state: "running",
+			lifecycle: lifecycle({ autoPause: true }),
+		});
+		const route = { sandboxId: "sbx-a-6532622b", port: 3000 };
+		expect((await request(route, "/")).status).toBe(200);
+
+		sandboxes.set("sbx-a", {
+			state: "paused",
+			lifecycle: lifecycle({ autoPause: true }),
+		});
+		clearRoutes("sbx-a");
+		expect((await request(route, "/")).status).toBe(502);
 	});
 
 	it("answers 502 for an unknown sandbox instead of picking another one", async () => {
@@ -271,6 +302,36 @@ describe("handleProxyRequest", () => {
 				(await envdChecks.request({ sandboxId: "sbx-a", port: ENVD })).status,
 			).toBe(200);
 		});
+	});
+
+	it.each([
+		"/init",
+		"/%69nit",
+		"//init",
+		"/./init",
+		"/x/../init",
+		"/freeze",
+		"/upgrade",
+	])(
+		"keeps envd's control route %s unreachable through a sandbox URL",
+		async (path) => {
+			const { sandboxes, request } = setup(true);
+			sandboxes.set("sbx-a", { state: "running", lifecycle: lifecycle() });
+			const res = await request({ sandboxId: "sbx-a", port: ENVD }, path, {
+				method: "POST",
+				headers: { "X-Access-Token": TOKEN },
+			});
+			expect(res.status).toBe(404);
+			expect(await res.text()).toContain("reserved for the E2B control plane");
+			expect(received).toHaveLength(0);
+		},
+	);
+
+	it("still forwards an app port's own /init path", async () => {
+		const { sandboxes, request } = setup(true);
+		sandboxes.set("sbx-a", { state: "running", lifecycle: lifecycle() });
+		const res = await request({ sandboxId: "sbx-a", port: 3000 }, "/init");
+		expect(res.status).toBe(200);
 	});
 
 	it("requires the traffic access token on app ports when public traffic is off", async () => {

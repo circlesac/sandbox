@@ -128,6 +128,12 @@ class FakeBackend implements ContainerBackend {
 		return this.envdVersionValue;
 	}
 
+	get(sandboxId: string): FakeSandbox {
+		const sb = this.sandboxes.get(sandboxId);
+		if (!sb) throw new Error(`no sandbox ${sandboxId}`);
+		return sb;
+	}
+
 	stateOf(sandboxId: string): State | "removed" {
 		return this.sandboxes.get(sandboxId)?.state ?? "removed";
 	}
@@ -314,7 +320,7 @@ describe("SandboxService", () => {
 		it("re-arms running sandboxes from the persisted anchor and expires overdue ones", async () => {
 			const fresh = await service.create({ timeout: 100 });
 			const overdue = await service.create({ timeout: 100, autoPause: true });
-			backend.sandboxes.get(overdue.sandboxID)!.startedAt -= 200_000;
+			backend.get(overdue.sandboxID).startedAt -= 200_000;
 			ttl.clearAll();
 
 			// A new process with no timers and no memory of the sandboxes.
@@ -345,7 +351,7 @@ describe("SandboxService", () => {
 
 		it("keeps the old pause-on-timeout behavior for sandboxes created before lifecycles", async () => {
 			const { sandboxID } = await service.create({ timeout: 10 });
-			backend.sandboxes.get(sandboxID)!.opts.lifecycle = LEGACY_LIFECYCLE;
+			backend.get(sandboxID).opts.lifecycle = LEGACY_LIFECYCLE;
 			await vi.advanceTimersByTimeAsync(10_000);
 			expect(backend.stateOf(sandboxID)).toBe("stopped");
 		});
@@ -453,6 +459,26 @@ describe("SandboxService", () => {
 			await vi.advanceTimersByTimeAsync(10_000);
 			expect(await service.resumeForTraffic(sandboxID)).toBe(false);
 			expect(backend.sandboxes.size).toBe(0);
+		});
+	});
+
+	describe("IDs with an E2B client-ID suffix", () => {
+		it("resolve to the sandbox for every operation", async () => {
+			const { sandboxID } = await service.create({ timeout: 60 });
+			const suffixed = `${sandboxID}-6532622b`;
+
+			expect((await service.getInfo(suffixed))?.sandboxID).toBe(sandboxID);
+			await service.pause(suffixed);
+			expect(backend.stateOf(sandboxID)).toBe("frozen");
+			await service.connect(suffixed);
+			expect(backend.stateOf(sandboxID)).toBe("running");
+			expect(await service.kill(suffixed)).toBe(true);
+			expect(backend.stateOf(sandboxID)).toBe("removed");
+		});
+
+		it("do not match a different sandbox", async () => {
+			await service.create({});
+			expect(await service.getInfo("sbx-unknown-6532622b")).toBeNull();
 		});
 	});
 

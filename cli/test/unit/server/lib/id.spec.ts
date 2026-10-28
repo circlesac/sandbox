@@ -18,6 +18,12 @@ describe("generateSandboxId", () => {
 		expect(id.length).toBe(4 + 12); // "sbx-" + 12 chars
 	});
 
+	it("uses only lowercase letters and digits after the prefix, as hostnames require", () => {
+		for (let i = 0; i < 1000; i++) {
+			expect(generateSandboxId()).toMatch(/^sbx-[0-9a-z]{12}$/);
+		}
+	});
+
 	it("generates unique IDs", () => {
 		const ids = new Set(Array.from({ length: 100 }, () => generateSandboxId()));
 		expect(ids.size).toBe(100);

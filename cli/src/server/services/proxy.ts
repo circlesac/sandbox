@@ -1,9 +1,25 @@
+import { posix } from "node:path";
 import type { Context } from "hono";
 import { config } from "../config.ts";
 import { UnsupportedError } from "../errors.ts";
 import type { SandboxInfo } from "../types.ts";
 import type { ContainerBackend, ProxyTarget } from "./backend.ts";
 import { type SandboxLifecycle, verifyFileSignature } from "./lifecycle.ts";
+
+/**
+ * envd routes only the control plane may call, as e2b-dev/runtime's proxy
+ * lists them. The control plane reaches envd directly, so through a sandbox
+ * URL these have no legitimate caller.
+ */
+const INTERNAL_ENVD_PATHS = new Set([
+	"/collapse",
+	"/freeze",
+	"/fsfreeze",
+	"/fsthaw",
+	"/init",
+	"/unfreeze",
+	"/upgrade",
+]);
 
 /** What the proxy needs from the sandbox service. */
 export interface ProxySandboxes {
@@ -37,7 +53,10 @@ export function registerToken(accessToken: string, sandboxId: string): void {
 /** Forgets where a sandbox's ports are, e.g. after a pause; its tokens stay. */
 export function clearRoutes(sandboxId: string): void {
 	for (const key of routeCache.keys()) {
-		if (key.startsWith(`${sandboxId}:`)) routeCache.delete(key);
+		// Keys may carry an E2B client-ID suffix after the sandbox ID.
+		if (key.startsWith(`${sandboxId}:`) || key.startsWith(`${sandboxId}-`)) {
+			routeCache.delete(key);
+		}
 	}
 }
 
@@ -112,27 +131,35 @@ async function lookupRoute(
 	const cached = routeCache.get(key);
 	if (cached) return cached;
 
-	let found = await sandboxes.locate(route.sandboxId);
+	// E2B hosts may end the sandbox ID with an old client ID:
+	// <port>-<sandboxId>-<clientId>.<domain>, the client ID 8 hex digits.
+	let id = route.sandboxId;
+	let found = await sandboxes.locate(id);
+	const withoutClientId = id.match(/^(.+)-[0-9a-f]{8}$/)?.[1];
+	if (!found && withoutClientId) {
+		found = await sandboxes.locate(withoutClientId);
+		if (found) id = withoutClientId;
+	}
 	if (!found) {
-		return proxyError(c, 502, `Sandbox ${route.sandboxId} not found`);
+		return proxyError(c, 502, `Sandbox ${id} not found`);
 	}
 	if (found.info.state !== "running") {
-		if (!(await sandboxes.resumeForTraffic(route.sandboxId))) {
+		if (!(await sandboxes.resumeForTraffic(id))) {
 			return proxyError(
 				c,
 				502,
-				`Sandbox ${route.sandboxId} is paused; resume it with Sandbox.connect()`,
+				`Sandbox ${id} is paused; resume it with Sandbox.connect()`,
 			);
 		}
-		found = await sandboxes.locate(route.sandboxId);
+		found = await sandboxes.locate(id);
 		if (!found) {
-			return proxyError(c, 502, `Sandbox ${route.sandboxId} not found`);
+			return proxyError(c, 502, `Sandbox ${id} not found`);
 		}
 	}
 
 	let target: ProxyTarget | null;
 	try {
-		target = await found.backend.resolveTarget(route.sandboxId, route.port);
+		target = await found.backend.resolveTarget(id, route.port);
 	} catch (err) {
 		if (err instanceof UnsupportedError) return proxyError(c, 502, err.message);
 		throw err;
@@ -141,7 +168,7 @@ async function lookupRoute(
 		return proxyError(
 			c,
 			502,
-			`Port ${route.port} of sandbox ${route.sandboxId} is not reachable`,
+			`Port ${route.port} of sandbox ${id} is not reachable`,
 		);
 	}
 
@@ -164,6 +191,19 @@ export async function handleProxyRequest(
 	if (resolved instanceof Response) return resolved;
 
 	if (route.port === config.envdPort) {
+		// envd routes the decoded path, so check that, or "/%69nit" would pass.
+		const requestPath = posix.normalize(
+			safeDecode(new URL(c.req.url).pathname),
+		);
+		if (INTERNAL_ENVD_PATHS.has(requestPath)) {
+			return c.json(
+				{
+					code: 404,
+					message: `${requestPath} is reserved for the E2B control plane`,
+				},
+				404,
+			);
+		}
 		if (!envdAuthorized(c, resolved)) {
 			return proxyError(c, 401, "Missing or invalid sandbox access token");
 		}
@@ -248,4 +288,12 @@ function endOnUpstreamReset(
 			return reader.cancel(reason);
 		},
 	});
+}
+
+function safeDecode(path: string): string {
+	try {
+		return decodeURIComponent(path);
+	} catch {
+		return path;
+	}
 }

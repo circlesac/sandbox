@@ -30,7 +30,7 @@ Shuru uses [Apple Virtualization.framework](https://developer.apple.com/document
 docker run --rm -v /tmp/envd-build:/out \
   -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=arm64 \
   golang:1.22-alpine sh -c \
-  'apk add git && git clone https://github.com/e2b-dev/infra /src && \
+  'apk add git && git clone https://github.com/e2b-dev/runtime /src && \
    cd /src/packages/envd && go build -o /out/envd ./cmd/envd'
 
 # Serve the binary (in a separate terminal)

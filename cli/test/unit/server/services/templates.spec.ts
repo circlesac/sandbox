@@ -97,7 +97,7 @@ describe("TemplateService", () => {
 			'LABEL e2b.start-cmd="npm start"',
 			'LABEL e2b.ready-cmd="curl -sf localhost:3000"',
 			"ENTRYPOINT []",
-			'CMD ["/usr/bin/envd", "-isnotfc"]',
+			'CMD ["/bin/sh", "-c", "if [ -x /usr/local/bin/sandbox-portf ]; then /usr/local/bin/sandbox-portf & fi; exec /usr/bin/envd -isnotfc"]',
 			"",
 		]);
 		expect(status.logEntries.map((e) => e.message)).toContain(

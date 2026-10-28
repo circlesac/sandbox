@@ -305,7 +305,10 @@ export class TemplateService {
 		if (body.readyCmd)
 			lines.push(`LABEL e2b.ready-cmd=${JSON.stringify(body.readyCmd)}`);
 		lines.push("ENTRYPOINT []");
-		lines.push('CMD ["/usr/bin/envd", "-isnotfc"]');
+		// The base template's command: envd, plus sandbox-portf where present.
+		lines.push(
+			'CMD ["/bin/sh", "-c", "if [ -x /usr/local/bin/sandbox-portf ]; then /usr/local/bin/sandbox-portf & fi; exec /usr/bin/envd -isnotfc"]',
+		);
 		writeFileSync(join(dir, "Dockerfile"), `${lines.join("\n")}\n`);
 		return dir;
 	}
