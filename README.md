@@ -123,8 +123,7 @@ import Sandbox from "e2b";
 
 const opts = {
   apiUrl: "http://localhost:49982",
-  apiKey: "sk-...",
-  validateApiKey: false,
+  apiKey: "e2b_...",
 };
 
 // Linux sandbox (default)
@@ -141,11 +140,13 @@ const result2 = await macos.commands.run("sw_vers -productName");
 // → "macOS"
 ```
 
-Recent E2B SDKs validate official Cloud keys as `e2b_<hex>` before making a
-request. `circlesac/sandbox` uses its own authenticated `sk-sandbox-*` keys, so
-custom-control-plane clients must set `validateApiKey: false`. This disables
-only the SDK's local prefix check; the control plane still authenticates the
-key. For Padawan's PTY smoke, use the equivalent environment setting:
+Recent E2B SDKs validate keys as `e2b_` followed by 40 hex characters before
+making a request. `sandbox serve` generates keys in that format. A config
+created before this change holds an `sk-sandbox-*` key: replace it with a key in
+the new format, or set `validateApiKey: false` on the client. The flag disables
+only the SDK's local format check; the control plane still authenticates the
+key. For Padawan's PTY smoke with an older key, use the equivalent environment
+setting:
 
 ```bash
 E2B_VALIDATE_API_KEY=false \

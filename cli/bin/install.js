@@ -35,6 +35,8 @@ function download(url) {
 }
 
 if (process.env.CI) process.exit(0);
+// A source checkout has no version; only a published package downloads a release binary.
+if (!version) process.exit(0);
 
 const platform = `${process.platform}-${process.arch}`;
 const info = PLATFORMS[platform];

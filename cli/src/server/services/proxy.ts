@@ -126,6 +126,7 @@ export async function handleProxyRequest(
   // Prevent double-decompression: Bun's fetch auto-decompresses gzip
   // but keeps Content-Encoding header, confusing the downstream client
   headers.delete("accept-encoding");
+  headers.delete("transfer-encoding");
 
   try {
     const response = await fetch(targetUrl, {
@@ -133,7 +134,7 @@ export async function handleProxyRequest(
       headers,
       body:
         c.req.method !== "GET" && c.req.method !== "HEAD"
-          ? c.req.raw.body
+          ? await c.req.raw.arrayBuffer()
           : undefined,
       duplex: "half",
     });

@@ -31,7 +31,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/dockerode": "^4.0.1",
-    "e2b": "^2.12.1",
+    "e2b": "^2.31.0",
     "typescript": "^5",
     "vitest": "^4.0.18"
   }
