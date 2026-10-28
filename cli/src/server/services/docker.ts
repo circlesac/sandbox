@@ -463,8 +463,12 @@ export class DockerService implements ContainerBackend {
 	}
 
 	async removeContainer(sandboxId: string): Promise<boolean> {
+		const container = this.docker.getContainer(sandboxId);
+		const image = await container.inspect().then(
+			(info) => info.Config.Image,
+			() => null,
+		);
 		try {
-			const container = this.docker.getContainer(sandboxId);
 			await container.remove({ force: true });
 		} catch (err: unknown) {
 			// 409: another remove, such as a timeout's, is already under way.
@@ -473,7 +477,24 @@ export class DockerService implements ContainerBackend {
 			return false;
 		}
 		this.clearTimeoutState(sandboxId);
+		await this.removeForkImage(image);
 		return true;
+	}
+
+	/**
+	 * A fork's image exists only for its forks, so it goes with the last of
+	 * them. Docker refuses (409) while another container, even a stopped one,
+	 * still uses it.
+	 */
+	private async removeForkImage(image: string | null) {
+		if (!image?.startsWith("sandbox-fork-")) return;
+		try {
+			await this.docker.getImage(image).remove();
+		} catch (err: unknown) {
+			if (!isDockerNotFound(err) && !isDockerConflict(err)) {
+				console.warn(`Could not remove fork image ${image}: ${err}`);
+			}
+		}
 	}
 
 	/**

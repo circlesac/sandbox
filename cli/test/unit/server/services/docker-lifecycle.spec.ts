@@ -10,6 +10,7 @@ const container = {
 	running: true,
 	paused: false,
 	labels: {} as Record<string, string>,
+	image: "sandbox-base:latest",
 	ip: "172.17.0.5",
 	calls: [] as string[],
 };
@@ -19,7 +20,7 @@ function inspectInfo() {
 		Id: "c1",
 		Name: "/sbx-a",
 		Created: "2026-10-28T00:00:00.000Z",
-		Config: { Labels: container.labels },
+		Config: { Labels: container.labels, Image: container.image },
 		State: {
 			Running: container.running,
 			Paused: container.paused,
@@ -33,6 +34,8 @@ function inspectInfo() {
 }
 
 let removeError: Error | null = null;
+let imageRemoveError: Error | null = null;
+const removedImages: string[] = [];
 
 vi.mock("dockerode", () => ({
 	default: class {
@@ -57,6 +60,14 @@ vi.mock("dockerode", () => ({
 				},
 				remove: async () => {
 					if (removeError) throw removeError;
+				},
+			};
+		}
+		getImage(name: string) {
+			return {
+				remove: async () => {
+					if (imageRemoveError) throw imageRemoveError;
+					removedImages.push(name);
 				},
 			};
 		}
@@ -161,5 +172,24 @@ describe("DockerService.removeContainer", () => {
 		});
 		await expect(backend().removeContainer("sbx-a")).resolves.toBe(false);
 		removeError = null;
+	});
+
+	it("removes a fork's image with its last fork, and only a fork's", async () => {
+		removedImages.length = 0;
+		container.image = "sandbox-base:latest";
+		await backend().removeContainer("sbx-a");
+		expect(removedImages).toEqual([]);
+
+		container.image = "sandbox-fork-abc123:latest";
+		await backend().removeContainer("sbx-a");
+		expect(removedImages).toEqual(["sandbox-fork-abc123:latest"]);
+
+		// Docker refuses while a sibling fork still uses the image.
+		imageRemoveError = Object.assign(new Error("image is in use"), {
+			statusCode: 409,
+		});
+		await expect(backend().removeContainer("sbx-a")).resolves.toBe(true);
+		imageRemoveError = null;
+		container.image = "sandbox-base:latest";
 	});
 });

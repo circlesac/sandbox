@@ -70,7 +70,11 @@ if (!existsSync(join(repo, ".git"))) {
 must("git", ["-C", repo, "fetch", "-q", "--depth", "1", "origin", commit]);
 must("git", ["-C", repo, "checkout", "-q", "--detach", "FETCH_HEAD"]);
 
-// 2. A control plane on a free port.
+// 2. A control plane on a free port. Upstream's test cleanups run on an
+// already-cancelled context, so some sandboxes and snapshots outlive their
+// tests; note what exists now to remove what the run leaves behind.
+const imagesBefore = new Set(savedImages());
+const startedAt = new Date().toISOString();
 const port = await freePort();
 const url = `http://localhost:${port}`;
 const server = spawn("bun", ["run", "src/server/index.ts"], {
@@ -162,7 +166,43 @@ try {
 	console.log(report);
 	if (out) writeFileSync(out, `${report}\n`);
 } finally {
+	await removeLeftovers().catch((err) => console.error(`cleanup: ${err}`));
 	server.kill("SIGTERM");
+}
+
+/** Image IDs of snapshots and forks, which are Docker images on this backend. */
+function savedImages(): string[] {
+	const ids = ["label=e2b.snapshot=true", "label=e2b.fork-of"].flatMap(
+		(filter) =>
+			spawnSync("docker", ["images", "-q", "--filter", filter], {
+				encoding: "utf-8",
+			}).stdout.split("\n"),
+	);
+	return [...new Set(ids.filter(Boolean))];
+}
+
+/** Kills the sandboxes this run started and removes the images it saved. */
+async function removeLeftovers() {
+	const headers = { "X-API-Key": API_KEY };
+	const res = await fetch(
+		`${url}/v2/sandboxes?startedAfter=${encodeURIComponent(startedAt)}`,
+		{ headers },
+	);
+	const sandboxes = res.ok
+		? ((await res.json()) as { sandboxID: string }[])
+		: [];
+	await Promise.allSettled(
+		sandboxes.map((s) =>
+			fetch(`${url}/sandboxes/${s.sandboxID}`, { method: "DELETE", headers }),
+		),
+	);
+	const images = savedImages().filter((id) => !imagesBefore.has(id));
+	if (images.length > 0) {
+		spawnSync("docker", ["rmi", "-f", ...images], { stdio: "ignore" });
+	}
+	console.error(
+		`Removed ${sandboxes.length} leftover sandboxes and ${images.length} snapshot or fork images`,
+	);
 }
 
 /**

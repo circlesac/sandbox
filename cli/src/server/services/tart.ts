@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { exec, execSync } from "node:child_process";
 import { createServer, type Socket } from "node:net";
 import { connect } from "node:net";
 import { config } from "../config.ts";
@@ -33,17 +33,24 @@ interface TartVm {
 	// tart list --format json provides more fields but we only need these
 }
 
-function tartExec(args: string[], timeoutMs = 10_000): string {
-	return execSync(`tart ${args.join(" ")}`, {
-		encoding: "utf-8",
-		timeout: timeoutMs,
-		stdio: ["ignore", "pipe", "pipe"],
-	}).trim();
+/**
+ * Runs the tart CLI without blocking the server: `tart ip --wait`, suspend,
+ * and clone can each take up to a minute or two, and a synchronous call would
+ * stall every other request meanwhile. Output and errors are captured.
+ */
+function tartExec(args: string[], timeoutMs = 10_000): Promise<string> {
+	return new Promise((resolve, reject) => {
+		exec(
+			`tart ${args.join(" ")}`,
+			{ encoding: "utf-8", timeout: timeoutMs },
+			(err, stdout) => (err ? reject(err) : resolve(String(stdout).trim())),
+		);
+	});
 }
 
-function tartList(): TartVm[] {
+async function tartList(): Promise<TartVm[]> {
 	try {
-		const output = tartExec(["list", "--format", "json"]);
+		const output = await tartExec(["list", "--format", "json"]);
 		if (!output) return [];
 		const parsed = JSON.parse(output);
 		// tart list --format json returns an array of objects with Source, Name, Size, State, etc.
@@ -59,7 +66,7 @@ function tartList(): TartVm[] {
 	}
 }
 
-function tartIp(vmName: string, waitSec = 30): string {
+function tartIp(vmName: string, waitSec = 30): Promise<string> {
 	return tartExec(
 		["ip", "--wait", String(waitSec), vmName],
 		(waitSec + 10) * 1000,
@@ -122,8 +129,8 @@ export class TartBackend implements ContainerBackend {
 		}
 	}
 
-	private vmIsSuspended(vmName: string): boolean {
-		const vms = tartList();
+	private async vmIsSuspended(vmName: string): Promise<boolean> {
+		const vms = await tartList();
 		const vm = vms.find((v) => v.name === vmName);
 		return vm?.state === "suspended";
 	}
@@ -132,7 +139,7 @@ export class TartBackend implements ContainerBackend {
 		const imageName =
 			templateId === "base" ? "sandbox-base" : `sandbox-${templateId}`;
 
-		const vms = tartList();
+		const vms = await tartList();
 		if (vms.some((vm) => vm.name === imageName)) {
 			return imageName;
 		}
@@ -150,7 +157,7 @@ export class TartBackend implements ContainerBackend {
 		const vmName = `sandbox-${opts.sandboxId}`;
 
 		// Clone the template VM (APFS COW — instant, ~0.1s)
-		tartExec(["clone", image, vmName], 120_000);
+		await tartExec(["clone", image, vmName], 120_000);
 
 		// Register instance immediately to prevent orphan cleanup from deleting it
 		const instance: TartInstance = {
@@ -167,7 +174,7 @@ export class TartBackend implements ContainerBackend {
 		this.instances.set(opts.sandboxId, instance);
 
 		// Check if the cloned VM has a suspended state (for fast resume)
-		const isSuspended = this.vmIsSuspended(vmName);
+		const isSuspended = await this.vmIsSuspended(vmName);
 
 		// Start the VM in the background (resume if suspended, cold boot otherwise)
 		const run = Bun.spawn(
@@ -189,7 +196,7 @@ export class TartBackend implements ContainerBackend {
 		const ipWaitSec = isSuspended ? 3 : 30;
 		for (let i = 0; i < maxRetries; i++) {
 			try {
-				vmIp = tartIp(vmName, ipWaitSec);
+				vmIp = await tartIp(vmName, ipWaitSec);
 				if (vmIp) break;
 			} catch {
 				// VM not ready yet, retry
@@ -200,10 +207,10 @@ export class TartBackend implements ContainerBackend {
 			// Cleanup on failure
 			this.instances.delete(opts.sandboxId);
 			try {
-				tartExec(["stop", vmName]);
+				await tartExec(["stop", vmName]);
 			} catch {}
 			try {
-				tartExec(["delete", vmName]);
+				await tartExec(["delete", vmName]);
 			} catch {}
 			// tart run exits at once when it cannot start the VM, for example
 			// "The number of VMs exceeds the system limit" (macOS allows two).
@@ -235,10 +242,10 @@ export class TartBackend implements ContainerBackend {
 		if (!envdReady) {
 			this.instances.delete(opts.sandboxId);
 			try {
-				tartExec(["stop", vmName]);
+				await tartExec(["stop", vmName]);
 			} catch {}
 			try {
-				tartExec(["delete", vmName]);
+				await tartExec(["delete", vmName]);
 			} catch {}
 			throw new Error(
 				`envd-lite in VM "${vmName}" did not become healthy within 120s. ` +
@@ -264,34 +271,51 @@ export class TartBackend implements ContainerBackend {
 			throw new Error(`Sandbox "${sandboxId}" not found`);
 		}
 
-		const vms = tartList();
+		const vms = await tartList();
 		const vm = vms.find((v) => v.name === instance.vmName);
 		const wasRunning = vm?.state === "running";
 
-		if (!wasRunning) {
-			// Resume stopped/suspended VM
-			Bun.spawn(
+		// Resume a stopped or suspended VM. tart run exits at once when it
+		// cannot start one, for example while the previous run of a VM that
+		// could not be saved still holds it; try again a few times, then say why.
+		let run: ReturnType<typeof Bun.spawn> | undefined;
+		let runError = Promise.resolve("");
+		let restarts = 0;
+		const startRun = () => {
+			run = Bun.spawn(
 				["tart", "run", instance.vmName, "--no-graphics", "--suspendable"],
-				{
-					stdio: ["ignore", "ignore", "ignore"],
-				},
+				{ stdio: ["ignore", "ignore", "pipe"] },
 			);
-		}
+			runError = new Response(run.stderr as ReadableStream).text();
+		};
+		if (!wasRunning) startRun();
 
 		// Get IP (may have changed after resume). Resume from suspended is fast,
 		// so use short waits; a stopped VM (a pause the host could not save)
-		// boots from disk and gets the same waits as a new VM.
+		// boots from disk, polled in short steps so a failed run is noticed.
 		const coldBoot = vm?.state === "stopped";
 		let vmIp: string | undefined;
-		for (let i = 0; i < (coldBoot ? 6 : 2); i++) {
+		for (let i = 0; i < (coldBoot ? 18 : 2); i++) {
+			if (run && run.exitCode !== null) {
+				if (restarts >= 3) break;
+				restarts++;
+				await new Promise((r) => setTimeout(r, 2_000));
+				startRun();
+			}
 			try {
-				vmIp = tartIp(instance.vmName, coldBoot ? 30 : 3);
+				vmIp = await tartIp(instance.vmName, coldBoot ? 10 : 3);
 				if (vmIp) break;
 			} catch {}
 		}
 
 		if (!vmIp) {
-			throw new Error(`VM "${instance.vmName}" failed to get IP on resume`);
+			const reason =
+				run && run.exitCode !== null ? (await runError).trim() : "";
+			throw new Error(
+				reason
+					? `Tart VM "${instance.vmName}" did not resume: ${reason}`
+					: `VM "${instance.vmName}" failed to get IP on resume`,
+			);
 		}
 
 		// Wait for envd-lite to become healthy (suspended resume is near-instant)
@@ -353,11 +377,11 @@ export class TartBackend implements ContainerBackend {
 		instance.paused = true;
 
 		try {
-			tartExec(["suspend", instance.vmName], 60_000);
+			await tartExec(["suspend", instance.vmName], 60_000);
 		} catch {
 			// fallback to stop if suspend fails
 			try {
-				tartExec(["stop", instance.vmName]);
+				await tartExec(["stop", instance.vmName]);
 			} catch {}
 		}
 
@@ -365,7 +389,9 @@ export class TartBackend implements ContainerBackend {
 		// hosts refuse with "permission denied"), the VM stops instead: its disk
 		// survives, its memory and processes do not.
 		for (let i = 0; i < 60; i++) {
-			const state = tartList().find((v) => v.name === instance.vmName)?.state;
+			const state = (await tartList()).find(
+				(v) => v.name === instance.vmName,
+			)?.state;
 			if (state === "suspended") return true;
 			if (state === "stopped") {
 				console.warn(
@@ -386,11 +412,11 @@ export class TartBackend implements ContainerBackend {
 		instance.proxy = undefined;
 
 		try {
-			tartExec(["stop", instance.vmName]);
+			await tartExec(["stop", instance.vmName]);
 		} catch {}
 
 		try {
-			tartExec(["delete", instance.vmName]);
+			await tartExec(["delete", instance.vmName]);
 		} catch {}
 
 		this.instances.delete(sandboxId);
@@ -401,7 +427,7 @@ export class TartBackend implements ContainerBackend {
 		const instance = this.instances.get(sandboxId);
 		if (!instance) return null;
 
-		const vms = tartList();
+		const vms = await tartList();
 		const vm = vms.find((v) => v.name === instance.vmName);
 
 		if (!vm) {
@@ -429,7 +455,7 @@ export class TartBackend implements ContainerBackend {
 	async listSandboxes(filters?: {
 		state?: "running" | "paused";
 	}): Promise<SandboxInfo[]> {
-		const vms = tartList();
+		const vms = await tartList();
 		const vmMap = new Map(vms.map((vm) => [vm.name, vm]));
 		const results: SandboxInfo[] = [];
 		const dead: string[] = [];
@@ -447,7 +473,7 @@ export class TartBackend implements ContainerBackend {
 					`VM "${instance.vmName}" stopped (runner finished), cleaning up`,
 				);
 				try {
-					tartExec(["delete", instance.vmName]);
+					await tartExec(["delete", instance.vmName]);
 				} catch {}
 				instance.proxy?.close();
 				dead.push(id);
@@ -486,15 +512,15 @@ export class TartBackend implements ContainerBackend {
 				if (vm.state === "stopped" || vm.state === "suspended") {
 					console.log(`Orphaned VM "${vm.name}" (${vm.state}), deleting`);
 					try {
-						tartExec(["delete", vm.name]);
+						await tartExec(["delete", vm.name]);
 					} catch {}
 				} else if (vm.state === "running") {
 					console.log(`Orphaned VM "${vm.name}" running, stopping + deleting`);
 					try {
-						tartExec(["stop", vm.name]);
+						await tartExec(["stop", vm.name]);
 					} catch {}
 					try {
-						tartExec(["delete", vm.name]);
+						await tartExec(["delete", vm.name]);
 					} catch {}
 				}
 			}

@@ -5,10 +5,32 @@ vi.mock("../../../../src/server/config.ts", () => ({
 	config: { envdPort: 49983 },
 }));
 
-// Mock execSync for tart CLI calls
+// Mock tart CLI calls. The backend runs them with exec, so they never block
+// the server; execSyncMock gives each command's output either way.
 const execSyncMock = vi.fn();
+/** Commands whose callback is held until released, to observe a pending call. */
+const held = new Map<string, () => void>();
+const execMock = vi.fn(
+	(
+		cmd: string,
+		opts: unknown,
+		cb: (err: Error | null, stdout?: string) => void,
+	) => {
+		const finish = () => {
+			try {
+				cb(null, execSyncMock(cmd, opts));
+			} catch (err) {
+				cb(err as Error);
+			}
+		};
+		const hold = [...held.keys()].find((prefix) => cmd.startsWith(prefix));
+		if (hold) held.set(hold, finish);
+		else queueMicrotask(finish);
+	},
+);
 vi.mock("node:child_process", () => ({
 	execSync: (...args: unknown[]) => execSyncMock(...args),
+	exec: (...args: Parameters<typeof execMock>) => execMock(...args),
 }));
 
 // Mock net for port allocation and TCP proxy
@@ -309,15 +331,100 @@ describe("TartBackend", () => {
 	});
 
 	describe("tart command execution", () => {
-		it("captures stderr instead of leaking it to the parent console", async () => {
+		it("captures output with exec instead of leaking it to the parent console", async () => {
 			execSyncMock.mockReturnValue(JSON.stringify([]));
 
 			await backend.listSandboxes();
 
-			expect(execSyncMock).toHaveBeenCalledWith(
+			expect(execMock).toHaveBeenCalledWith(
 				"tart list --format json",
-				expect.objectContaining({ stdio: ["ignore", "pipe", "pipe"] }),
+				expect.objectContaining({ encoding: "utf-8" }),
+				expect.any(Function),
 			);
+		});
+
+		it("keeps serving other requests while a slow tart command runs", async () => {
+			(backend as unknown as { instances: Map<string, unknown> }).instances.set(
+				"sbx-s",
+				{
+					sandboxId: "sbx-s",
+					vmName: "sandbox-sbx-s",
+					hostPort: 1,
+					accessToken: "t",
+					templateId: "base",
+					createdAt: new Date().toISOString(),
+					timeoutSec: 300,
+					lifecycle: LEGACY_LIFECYCLE,
+				},
+			);
+			execSyncMock.mockImplementation((cmd: string) =>
+				cmd.startsWith("tart list")
+					? JSON.stringify([{ Name: "sandbox-sbx-s", State: "suspended" }])
+					: "",
+			);
+			held.set("tart suspend", () => {});
+
+			const pausing = backend.stopContainer("sbx-s");
+			await vi.waitFor(() =>
+				expect(execMock).toHaveBeenCalledWith(
+					"tart suspend sandbox-sbx-s",
+					expect.anything(),
+					expect.any(Function),
+				),
+			);
+			// The suspend has not returned, yet another request completes.
+			const [info] = await backend.listSandboxes();
+			expect(info?.sandboxId).toBe("sbx-s");
+
+			held.get("tart suspend")?.();
+			held.clear();
+			expect(await pausing).toBe(true);
+		});
+	});
+
+	describe("resuming when tart cannot start the VM", () => {
+		it("tries again, then reports tart's own error", async () => {
+			(backend as unknown as { instances: Map<string, unknown> }).instances.set(
+				"sbx-r",
+				{
+					sandboxId: "sbx-r",
+					vmName: "sandbox-sbx-r",
+					hostPort: 1,
+					accessToken: "t",
+					templateId: "base",
+					createdAt: new Date().toISOString(),
+					timeoutSec: 300,
+					lifecycle: LEGACY_LIFECYCLE,
+					paused: true,
+				},
+			);
+			execSyncMock.mockImplementation((cmd: string) => {
+				if (cmd.startsWith("tart list")) {
+					return JSON.stringify([{ Name: "sandbox-sbx-r", State: "stopped" }]);
+				}
+				if (cmd.startsWith("tart ip")) throw new Error("no IP");
+				return "";
+			});
+			mockProc.exitCode = 1;
+			spawnMock.mockImplementation(() => ({
+				...mockProc,
+				stderr: new Response("VM is locked by another process\n").body,
+			}));
+			vi.useRealTimers();
+			const originalSetTimeout = globalThis.setTimeout;
+			globalThis.setTimeout = ((fn: () => void) =>
+				originalSetTimeout(fn, 0)) as typeof setTimeout;
+			try {
+				await expect(backend.startContainer("sbx-r")).rejects.toThrow(
+					/did not resume: VM is locked by another process/,
+				);
+				expect(spawnMock).toHaveBeenCalledTimes(4);
+			} finally {
+				globalThis.setTimeout = originalSetTimeout;
+				mockProc.exitCode = null;
+				spawnMock.mockReset();
+				spawnMock.mockReturnValue(mockProc);
+			}
 		});
 	});
 });
