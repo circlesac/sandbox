@@ -44,6 +44,8 @@ class FakeBackend implements ContainerBackend {
 	supportsPause = true;
 	supportsFilesystemPause = true;
 	envdChecksAccessToken = true;
+	envdAcceptsAccessToken = true;
+	envdVersionValue: string | null = null;
 	sandboxes = new Map<string, FakeSandbox>();
 	events: string[] = [];
 
@@ -120,6 +122,10 @@ class FakeBackend implements ContainerBackend {
 
 	async resolveTarget(): Promise<ProxyTarget | null> {
 		return { host: "localhost", port: 40000 };
+	}
+
+	async envdVersion(): Promise<string | null> {
+		return this.envdVersionValue;
 	}
 
 	stateOf(sandboxId: string): State | "removed" {
@@ -205,6 +211,31 @@ describe("SandboxService", () => {
 			const result = await service.create({ secure: false });
 			expect(result.envdAccessToken).toBeNull();
 			expect(envd.init).toHaveBeenCalledWith(40000, {
+				accessToken: undefined,
+				envVars: {},
+			});
+		});
+
+		it("reports the envd version the backend found, or the default", async () => {
+			expect((await service.create({})).envdVersion).toBe("0.5.3");
+			backend.envdVersionValue = "0.10.2";
+			const { sandboxID, envdVersion } = await service.create({});
+			expect(envdVersion).toBe("0.10.2");
+			expect((await service.getInfo(sandboxID))?.envdVersion).toBe("0.10.2");
+		});
+
+		it("gives the token to an envd that accepts one, and withholds it from one that cannot", async () => {
+			backend.envdChecksAccessToken = false;
+			const accepted = await service.create({});
+			expect(envd.init).toHaveBeenLastCalledWith(40000, {
+				accessToken: accepted.envdAccessToken,
+				envVars: {},
+			});
+
+			backend.envdAcceptsAccessToken = false;
+			const withheld = await service.create({});
+			expect(withheld.envdAccessToken).toBeTruthy();
+			expect(envd.init).toHaveBeenLastCalledWith(40000, {
 				accessToken: undefined,
 				envVars: {},
 			});

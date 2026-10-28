@@ -49,6 +49,24 @@ for (const [name, suite] of Object.entries(providers)) {
 		record("sdk-matrix", run("bun", ["run", "scripts/sdk-matrix.ts"]));
 }
 
+// envd-lite is the Tart agent; its Go tests run anywhere Go and protoc are installed.
+const goTools = [
+	"go",
+	"protoc",
+	"protoc-gen-go",
+	"protoc-gen-connect-go",
+].filter(
+	(tool) => spawnSync("which", [tool], { stdio: "ignore" }).status !== 0,
+);
+if (goTools.length > 0) {
+	results.push({
+		name: "envd-lite",
+		outcome: `not available: missing ${goTools.join(", ")}`,
+	});
+} else {
+	record("envd-lite", run("bun", ["run", "test:envd-lite"]));
+}
+
 console.log("\nLocal test summary");
 for (const { name, outcome } of results)
 	console.log(`  ${name.padEnd(10)} ${outcome}`);

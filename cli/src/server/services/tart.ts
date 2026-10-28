@@ -106,6 +106,9 @@ export class TartBackend implements ContainerBackend {
 	// suspends and keeps memory.
 	readonly supportsFilesystemPause = false;
 	readonly envdChecksAccessToken = false;
+	// envd-lite enforces a token it is given; older base images ignore it, so
+	// the control plane keeps checking as well.
+	readonly envdAcceptsAccessToken = true;
 	private instances = new Map<string, TartInstance>();
 
 	static isAvailable(): boolean {

@@ -1,6 +1,6 @@
-# Stage 1: Build envd from e2b-dev/infra source
+# Stage 1: Build envd from e2b-dev/runtime source (formerly e2b-dev/infra)
 FROM golang:latest AS envd-builder
-RUN git clone --depth 1 https://github.com/e2b-dev/infra.git /src
+RUN git clone --depth 1 https://github.com/e2b-dev/runtime.git /src
 WORKDIR /src/packages/envd
 RUN make build
 

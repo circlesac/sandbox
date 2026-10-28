@@ -5,5 +5,5 @@ cloudflared.yml
 cloudflared-credentials.json
 sandbox-config.json
 envd-lite/envd-lite
-envd-lite/upstream/e2b-dev-infra/gen/
+envd-lite/upstream/e2b-dev-runtime/gen/
 *.bun-build

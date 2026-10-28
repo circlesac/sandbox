@@ -63,6 +63,7 @@ export class DockerService implements ContainerBackend {
 	readonly supportsPause = true;
 	readonly supportsFilesystemPause = true;
 	readonly envdChecksAccessToken = true;
+	readonly envdAcceptsAccessToken = true;
 	private docker: Docker;
 	private timeoutState = new Map<string, DockerTimeoutState>();
 	private timeoutStatePath: string | null;
@@ -229,6 +230,48 @@ export class DockerService implements ContainerBackend {
 			startCmd: labels["e2b.start-cmd"] || undefined,
 			readyCmd: labels["e2b.ready-cmd"] || undefined,
 		};
+	}
+
+	private envdVersions = new Map<string, string | null>(); // image ID → version
+
+	/** The envd version in the sandbox's image, from `envd -version`, cached per image. */
+	async envdVersion(sandboxId: string): Promise<string | null> {
+		const info = await this.docker.getContainer(sandboxId).inspect();
+		const cached = this.envdVersions.get(info.Image);
+		if (cached !== undefined) return cached;
+		if (!info.State.Running || info.State.Paused) return null;
+		const output = await this.execOutput(sandboxId, [
+			"/usr/bin/envd",
+			"-version",
+		]);
+		const version = output.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
+		this.envdVersions.set(info.Image, version);
+		return version;
+	}
+
+	private async execOutput(sandboxId: string, cmd: string[]): Promise<string> {
+		const exec = await this.docker.getContainer(sandboxId).exec({
+			Cmd: cmd,
+			AttachStdout: true,
+			AttachStderr: true,
+		});
+		const stream = await exec.start({});
+		const chunks: Buffer[] = [];
+		await new Promise<void>((resolve) => {
+			stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+			stream.on("end", resolve);
+			stream.on("close", resolve);
+			stream.on("error", () => resolve());
+		});
+		// Docker multiplexes stdout and stderr with 8-byte frame headers.
+		const raw = Buffer.concat(chunks);
+		const out: Buffer[] = [];
+		for (let i = 0; i + 8 <= raw.length; ) {
+			const size = raw.readUInt32BE(i + 4);
+			out.push(raw.subarray(i + 8, i + 8 + size));
+			i += 8 + size;
+		}
+		return Buffer.concat(out).toString("utf-8");
 	}
 
 	/**

@@ -13,8 +13,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	procpb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/process"
-	procrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/process/processconnect"
+	procpb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/process"
+	procrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/process/processconnect"
 )
 
 func newProcessTestServer(t *testing.T) (procrpc.ProcessClient, *ProcessService, func()) {

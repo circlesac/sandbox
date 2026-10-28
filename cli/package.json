@@ -22,6 +22,7 @@
 		"test:tart": "bun run scripts/test-providers.ts tart",
 		"test:shuru": "bun run scripts/test-providers.ts shuru",
 		"test:sdk-matrix": "bun run scripts/sdk-matrix.ts",
+		"test:envd-lite": "cd ../envd-lite && go generate ./... && test -z \"$(gofmt -l main.go service)\" && go vet ./... && go test ./...",
 		"test:local": "bun run scripts/test-providers.ts local",
 		"test:coverage": "vitest run --coverage",
 		"typecheck": "tsc --noEmit",

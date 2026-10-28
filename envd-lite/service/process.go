@@ -15,8 +15,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/creack/pty"
 
-	procpb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/process"
-	procrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/process/processconnect"
+	procpb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/process"
+	procrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/process/processconnect"
 )
 
 // replayLimitBytes caps the per-process replay buffer used for Connect

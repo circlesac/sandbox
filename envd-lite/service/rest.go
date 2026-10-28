@@ -49,8 +49,9 @@ func HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// HandleInit sets environment variables and default user.
-func HandleInit(state *EnvState) http.HandlerFunc {
+// HandleInit sets environment variables, the default user, and the access
+// token. Once a token is set, only a request that knows it may change it.
+func HandleInit(state *EnvState, token *AccessToken) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -59,10 +60,20 @@ func HandleInit(state *EnvState) http.HandlerFunc {
 		var req struct {
 			EnvVars     map[string]string `json:"envVars"`
 			DefaultUser string            `json:"defaultUser"`
+			AccessToken string            `json:"accessToken"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if current := token.Get(); current != "" &&
+			!tokensEqual(req.AccessToken, current) &&
+			!tokensEqual(r.Header.Get("X-Access-Token"), current) {
+			http.Error(w, `{"code":401,"message":"missing or invalid access token"}`, http.StatusUnauthorized)
+			return
+		}
+		if req.AccessToken != "" {
+			token.Set(req.AccessToken)
 		}
 		state.Set(req.EnvVars)
 		if req.DefaultUser != "" {

@@ -30,6 +30,8 @@ export interface ContainerBackend {
 	readonly supportsFilesystemPause: boolean;
 	/** Whether the sandbox's envd itself rejects requests without the access token. */
 	readonly envdChecksAccessToken: boolean;
+	/** Whether envd may be given the access token at /init (some builds cannot take one). */
+	readonly envdAcceptsAccessToken: boolean;
 
 	resolveImage(templateId: string): Promise<string>;
 
@@ -59,6 +61,9 @@ export interface ContainerBackend {
 
 	/** Optional: remove template images by reference. */
 	removeTemplateImages?(refs: string[]): Promise<number>;
+
+	/** Optional: the envd API version the sandbox runs, which the SDK gates features on. */
+	envdVersion?(sandboxId: string): Promise<string | null>;
 
 	/** Optional: environment variables the sandbox's image defines. */
 	imageEnv?(sandboxId: string): Promise<Record<string, string>>;

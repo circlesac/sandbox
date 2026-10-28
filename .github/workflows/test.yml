@@ -21,7 +21,7 @@ jobs:
       run:
         working-directory: cli
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
 
@@ -39,3 +39,31 @@ jobs:
 
       - name: E2B SDK version matrix
         run: bun run test:sdk-matrix
+
+  envd-lite:
+    # Same reason as above: fork pull requests run here.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: envd-lite
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: envd-lite/go.mod
+          cache-dependency-path: envd-lite/go.sum
+
+      - name: Install code generators
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+          go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.21.1
+
+      - name: Generate, format check, vet, test
+        run: |
+          go generate ./...
+          unformatted="$(gofmt -l main.go service)"
+          if [ -n "$unformatted" ]; then echo "gofmt needed: $unformatted"; exit 1; fi
+          go vet ./...
+          go test ./...

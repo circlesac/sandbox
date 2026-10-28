@@ -69,6 +69,7 @@ export class ShuruBackend implements ContainerBackend {
 	// The Alpine envd build runs without an access token (memguard), so the
 	// control plane checks it instead.
 	readonly envdChecksAccessToken = false;
+	readonly envdAcceptsAccessToken = false;
 	private instances = new Map<string, ShruInstance>();
 
 	async resolveImage(templateId: string): Promise<string> {

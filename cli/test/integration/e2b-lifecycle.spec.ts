@@ -115,6 +115,22 @@ describe.skipIf(!opts)("E2B lifecycle and ports", { timeout: 120_000 }, () => {
 		expect(closedPort.status).toBe(502);
 	});
 
+	it("reports the envd version in the sandbox's image", async () => {
+		const sandbox = await Sandbox.create("base", opts);
+		created.push(sandbox.sandboxId);
+		const { envdVersion } = await Sandbox.getInfo(sandbox.sandboxId, opts);
+		const [major, minor] = envdVersion.split(".").map(Number);
+		// The base image builds envd from upstream main, far past the 0.5.3 default.
+		expect(envdVersion).toMatch(/^\d+\.\d+\.\d+$/);
+		expect((major ?? 0) * 1000 + (minor ?? 0)).toBeGreaterThan(5);
+
+		// Newer envd versions switch the SDK to octet-stream uploads.
+		await sandbox.files.write("/home/user/upload.bin", "x".repeat(100_000));
+		expect((await sandbox.files.read("/home/user/upload.bin")).length).toBe(
+			100_000,
+		);
+	});
+
 	it("kills a sandbox on timeout by default and never brings it back", async () => {
 		const sandbox = await Sandbox.create("base", { ...opts, timeoutMs: 3_000 });
 		created.push(sandbox.sandboxId);

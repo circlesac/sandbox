@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"golang.org/x/sys/unix"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,8 +14,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/fsnotify/fsnotify"
 
-	fspb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/filesystem"
-	fsrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/filesystem/filesystemconnect"
+	fspb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/filesystem"
+	fsrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/filesystem/filesystemconnect"
 )
 
 func translateFSEventForTest(op uint32, name string) *fspb.FilesystemEvent {
@@ -124,8 +125,9 @@ func TestFS_Symlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stat.Msg.Entry.Type != fspb.FileType_FILE_TYPE_SYMLINK {
-		t.Errorf("type=%v", stat.Msg.Entry.Type)
+	// Like upstream envd: IsSymlink marks the link, Type describes its target.
+	if !stat.Msg.Entry.IsSymlink || stat.Msg.Entry.Type != fspb.FileType_FILE_TYPE_FILE {
+		t.Errorf("isSymlink=%v type=%v", stat.Msg.Entry.IsSymlink, stat.Msg.Entry.Type)
 	}
 	if stat.Msg.Entry.SymlinkTarget == nil || *stat.Msg.Entry.SymlinkTarget != target {
 		t.Errorf("target=%v", stat.Msg.Entry.SymlinkTarget)
@@ -359,5 +361,132 @@ func TestFS_Remove_NotFound(t *testing.T) {
 	// Remove of non-existent path uses RemoveAll which returns nil.
 	if _, err := client.Remove(context.Background(), connect.NewRequest(&fspb.RemoveRequest{Path: "/no/such/path/9999"})); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFS_SymlinkToDirectoryAndDangling(t *testing.T) {
+	client, _, stop := newFilesystemTestServer(t)
+	defer stop()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "dirlink")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "gone"), filepath.Join(dir, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, want := range map[string]fspb.FileType{
+		"dirlink":  fspb.FileType_FILE_TYPE_DIRECTORY,
+		"dangling": fspb.FileType_FILE_TYPE_UNSPECIFIED,
+	} {
+		stat, err := client.Stat(context.Background(), connect.NewRequest(&fspb.StatRequest{Path: filepath.Join(dir, name)}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !stat.Msg.Entry.IsSymlink || stat.Msg.Entry.Type != want {
+			t.Errorf("%s: isSymlink=%v type=%v, want type %v", name, stat.Msg.Entry.IsSymlink, stat.Msg.Entry.Type, want)
+		}
+	}
+
+	stat, err := client.Stat(context.Background(), connect.NewRequest(&fspb.StatRequest{Path: filepath.Join(dir, "real")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Msg.Entry.IsSymlink || stat.Msg.Entry.Permissions[0] != 'd' {
+		t.Errorf("directory: isSymlink=%v permissions=%q", stat.Msg.Entry.IsSymlink, stat.Msg.Entry.Permissions)
+	}
+}
+
+func TestFS_MetadataFromXattrs(t *testing.T) {
+	client, _, stop := newFilesystemTestServer(t)
+	defer stop()
+	file := filepath.Join(t.TempDir(), "tagged.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Setxattr(file, "user.e2b.owner", []byte("alice"), 0); err != nil {
+		t.Skipf("filesystem without user xattrs: %v", err)
+	}
+	if err := unix.Setxattr(file, "user.other", []byte("ignored"), 0); err != nil {
+		t.Fatal(err)
+	}
+	stat, err := client.Stat(context.Background(), connect.NewRequest(&fspb.StatRequest{Path: file}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stat.Msg.Entry.Metadata; len(got) != 1 || got["owner"] != "alice" {
+		t.Errorf("metadata = %v, want only owner=alice", got)
+	}
+}
+
+func TestFS_WatchIncludesEntryOnlyForSurvivingEntries(t *testing.T) {
+	client, _, stop := newFilesystemTestServer(t)
+	defer stop()
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.WatchDir(ctx, connect.NewRequest(&fspb.WatchDirRequest{Path: dir, IncludeEntry: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stream.Receive() {
+		t.Fatalf("no start: %v", stream.Err())
+	}
+	file := filepath.Join(dir, "new.txt")
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		os.WriteFile(file, []byte("x"), 0o644)
+		time.Sleep(150 * time.Millisecond)
+		os.Remove(file)
+	}()
+
+	sawCreate, sawRemove := false, false
+	for (!sawCreate || !sawRemove) && stream.Receive() {
+		fe, ok := stream.Msg().Event.(*fspb.WatchDirResponse_Filesystem)
+		if !ok {
+			continue
+		}
+		switch fe.Filesystem.Type {
+		case fspb.EventType_EVENT_TYPE_CREATE:
+			sawCreate = true
+			if fe.Filesystem.Entry == nil || fe.Filesystem.Entry.Name != "new.txt" {
+				t.Errorf("create event entry = %v", fe.Filesystem.Entry)
+			}
+		case fspb.EventType_EVENT_TYPE_REMOVE:
+			sawRemove = true
+			if fe.Filesystem.Entry != nil {
+				t.Errorf("remove event must not carry an entry: %v", fe.Filesystem.Entry)
+			}
+		}
+	}
+	if !sawCreate || !sawRemove {
+		t.Fatalf("create=%v remove=%v err=%v", sawCreate, sawRemove, stream.Err())
+	}
+}
+
+// A remove or rename event handled after a new entry appeared at the same
+// path must not describe that replacement.
+func TestWithEntry_NeverDescribesAReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reused.txt")
+	if err := os.WriteFile(path, []byte("replacement"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, typ := range []fspb.EventType{fspb.EventType_EVENT_TYPE_REMOVE, fspb.EventType_EVENT_TYPE_RENAME} {
+		fe := withEntry(&fspb.FilesystemEvent{Name: path, Type: typ}, true)
+		if fe.Entry != nil {
+			t.Errorf("%v event carries %v", typ, fe.Entry)
+		}
+	}
+	for _, typ := range []fspb.EventType{fspb.EventType_EVENT_TYPE_CREATE, fspb.EventType_EVENT_TYPE_WRITE, fspb.EventType_EVENT_TYPE_CHMOD} {
+		if fe := withEntry(&fspb.FilesystemEvent{Name: path, Type: typ}, true); fe.Entry == nil {
+			t.Errorf("%v event has no entry", typ)
+		}
+		if fe := withEntry(&fspb.FilesystemEvent{Name: path, Type: typ}, false); fe.Entry != nil {
+			t.Errorf("%v event has an entry without include_entry", typ)
+		}
 	}
 }

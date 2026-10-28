@@ -1,7 +1,11 @@
 import { config } from "../config.ts";
 import { NotFoundError, UnsupportedError } from "../errors.ts";
-import { nanoid } from "nanoid";
-import { generateAccessToken, generateSandboxId } from "../lib/id.ts";
+import {
+	generateAccessToken,
+	generateImageSuffix,
+	generateSandboxId,
+	isImageName,
+} from "../lib/id.ts";
 import type { SandboxInfo } from "../types.ts";
 import {
 	type BackendMap,
@@ -133,13 +137,13 @@ export class SandboxService {
 		this.ttl.start(p.sandboxId, p.timeoutSec, () => this.expire(p.sandboxId));
 	}
 
-	/** The token envd itself enforces; backends whose envd cannot are checked by the proxy. */
+	/** The token envd is given; the proxy also checks it for backends whose envd does not. */
 	private envdToken(
 		backend: ContainerBackend,
 		secure: boolean,
 		accessToken: string,
 	): string | undefined {
-		return secure && backend.envdChecksAccessToken ? accessToken : undefined;
+		return secure && backend.envdAcceptsAccessToken ? accessToken : undefined;
 	}
 
 	private response(
@@ -150,12 +154,13 @@ export class SandboxService {
 			lifecycle: { secure: boolean; trafficAccessToken: string | null };
 		},
 		ctx: RequestContext,
+		envdVersion = config.envdVersion,
 	) {
 		return {
 			sandboxID: p.sandboxId,
 			templateID: p.templateId,
 			clientID: p.sandboxId,
-			envdVersion: config.envdVersion,
+			envdVersion,
 			envdAccessToken: p.lifecycle.secure ? p.accessToken : null,
 			trafficAccessToken: p.lifecycle.trafficAccessToken,
 			domain: ctx.domain ?? null,
@@ -202,21 +207,37 @@ export class SandboxService {
 	async create(req: CreateRequest, ctx: RequestContext = {}) {
 		const p = this.prepare(req);
 		await this.boot(req, p);
-		return this.response(p, ctx);
+		return this.response(
+			p,
+			ctx,
+			await this.envdVersionOf(p.backend, p.sandboxId),
+		);
+	}
+
+	/** The sandbox's real envd version where the backend can tell, else the default. */
+	private async envdVersionOf(
+		backend: ContainerBackend,
+		sandboxId: string,
+	): Promise<string> {
+		const version = await backend.envdVersion?.(sandboxId).catch(() => null);
+		return version ?? config.envdVersion;
 	}
 
 	async getInfo(sandboxId: string) {
 		const found = await this.locate(sandboxId);
 		if (!found) return null;
-		return this.detail(found.info);
+		return this.detail(
+			found.info,
+			await this.envdVersionOf(found.backend, sandboxId),
+		);
 	}
 
-	private detail(info: SandboxInfo) {
+	private detail(info: SandboxInfo, envdVersion: string) {
 		return {
 			sandboxID: info.sandboxId,
 			templateID: info.templateId,
 			clientID: info.sandboxId,
-			envdVersion: config.envdVersion,
+			envdVersion,
 			domain: null,
 			startedAt: info.createdAt,
 			endAt: new Date(
@@ -329,6 +350,7 @@ export class SandboxService {
 				lifecycle: info.lifecycle,
 			},
 			ctx,
+			await this.envdVersionOf(backend, sandboxId),
 		);
 	}
 
@@ -370,8 +392,8 @@ export class SandboxService {
 				"Memory snapshots are not supported; a snapshot keeps only the filesystem",
 			);
 		}
-		const snapshotID = opts.name ?? `snapshot-${nanoid(10).toLowerCase()}`;
-		if (!/^[a-z0-9][a-z0-9._-]{0,127}$/.test(snapshotID)) {
+		const snapshotID = opts.name ?? `snapshot-${generateImageSuffix()}`;
+		if (!isImageName(snapshotID)) {
 			throw new UnsupportedError(
 				`Snapshot name "${snapshotID}" must be lowercase letters, digits, ".", "_" or "-"`,
 			);
@@ -407,7 +429,7 @@ export class SandboxService {
 			);
 		}
 
-		const forkTemplate = `fork-${nanoid(10).toLowerCase()}`;
+		const forkTemplate = `fork-${generateImageSuffix()}`;
 		await backend.commitTemplate(sandboxId, forkTemplate, {
 			"e2b.fork-of": sandboxId,
 		});
@@ -526,22 +548,28 @@ export class SandboxService {
 				.filter((s) => s === "running" || s === "paused"),
 		);
 		const results = await Promise.all(
-			this.allBackends.map((b) => b.listSandboxes()),
+			this.allBackends.map(async (backend) =>
+				(await backend.listSandboxes()).map((info) => ({ info, backend })),
+			),
 		);
-		return results
+		const matching = results
 			.flat()
-			.filter((info) => states.size === 0 || states.has(info.state))
-			.filter((info) =>
+			.filter(({ info }) => states.size === 0 || states.has(info.state))
+			.filter(({ info }) =>
 				Object.entries(filters.metadata ?? {}).every(
 					([key, value]) => info.metadata?.[key] === value,
 				),
 			)
 			.sort(
-				(a, b) =>
+				({ info: a }, { info: b }) =>
 					a.createdAt.localeCompare(b.createdAt) ||
 					a.sandboxId.localeCompare(b.sandboxId),
-			)
-			.map((info) => this.detail(info));
+			);
+		return Promise.all(
+			matching.map(async ({ info, backend }) =>
+				this.detail(info, await this.envdVersionOf(backend, info.sandboxId)),
+			),
+		);
 	}
 }
 

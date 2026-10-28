@@ -40,7 +40,7 @@ func TestHandleInit(t *testing.T) {
 	state := NewEnvState()
 	body := strings.NewReader(`{"envVars":{"K":"V"},"defaultUser":"alice"}`)
 	w := httptest.NewRecorder()
-	HandleInit(state)(w, httptest.NewRequest("POST", "/init", body))
+	HandleInit(state, &AccessToken{})(w, httptest.NewRequest("POST", "/init", body))
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -50,14 +50,14 @@ func TestHandleInit(t *testing.T) {
 
 	// Wrong method.
 	w = httptest.NewRecorder()
-	HandleInit(state)(w, httptest.NewRequest("GET", "/init", nil))
+	HandleInit(state, &AccessToken{})(w, httptest.NewRequest("GET", "/init", nil))
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", w.Code)
 	}
 
 	// Bad json.
 	w = httptest.NewRecorder()
-	HandleInit(state)(w, httptest.NewRequest("POST", "/init", strings.NewReader("not json")))
+	HandleInit(state, &AccessToken{})(w, httptest.NewRequest("POST", "/init", strings.NewReader("not json")))
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
 	}

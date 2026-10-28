@@ -12,6 +12,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
 import { NotFoundError, UnsupportedError } from "../errors.ts";
+import { isImageName } from "../lib/id.ts";
 import { type DockerService, templateImage } from "./docker.ts";
 
 export type BuildStatus = "waiting" | "building" | "ready" | "error";
@@ -49,9 +50,6 @@ export interface TemplateBuildStart {
 	readyCmd?: string;
 }
 
-/** Template names become Docker image names, so they follow those rules. */
-const TEMPLATE_NAME = /^[a-z0-9][a-z0-9._-]{0,127}$/;
-
 /**
  * Builds E2B templates as Docker images named `sandbox-<name>:<tag>`, so a
  * template is created the same way a sandbox from it is: Sandbox.create(name).
@@ -68,7 +66,8 @@ export class TemplateService {
 
 	requestBuild(req: { name?: string; tags?: string[] }) {
 		const name = req.name ?? "";
-		if (!TEMPLATE_NAME.test(name)) {
+		// Template names become Docker image names, so they follow those rules.
+		if (!isImageName(name)) {
 			throw new UnsupportedError(
 				`Template name "${name}" must be lowercase letters, digits, ".", "_" or "-"`,
 			);
