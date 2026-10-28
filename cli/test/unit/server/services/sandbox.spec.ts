@@ -49,6 +49,7 @@ class FakeBackend implements ContainerBackend {
 	envdVersionValue: string | null = null;
 	sandboxes = new Map<string, FakeSandbox>();
 	events: string[] = [];
+	commits: { templateId: string; labels: Record<string, string> }[] = [];
 
 	async resolveImage() {
 		return "sandbox-base:latest";
@@ -72,6 +73,15 @@ class FakeBackend implements ContainerBackend {
 		sb.state = "running";
 		this.events.push(`start ${sandboxId}`);
 		return { hostPort: 40001 };
+	}
+
+	async commitTemplate(
+		sandboxId: string,
+		templateId: string,
+		labels: Record<string, string>,
+	) {
+		this.events.push(`commit ${sandboxId} ${templateId}`);
+		this.commits.push({ templateId, labels });
 	}
 
 	refreshTimeout(sandboxId: string, timeoutSec: number) {
@@ -199,6 +209,13 @@ describe("SandboxService", () => {
 		it("rejects a timeout beyond maxTimeoutSec, as E2B does", async () => {
 			await expect(service.create({ timeout: 99999 })).rejects.toThrow(
 				/timeout must be at most 3600 seconds/,
+			);
+			expect(backend.sandboxes.size).toBe(0);
+		});
+
+		it("rejects a timeout of 0, as E2B does", async () => {
+			await expect(service.create({ timeout: 0 })).rejects.toThrow(
+				/greater than 0/,
 			);
 			expect(backend.sandboxes.size).toBe(0);
 		});
@@ -464,6 +481,17 @@ describe("SandboxService", () => {
 			);
 		});
 
+		it("rejects a connect timeout of 0, while setTimeout accepts 0", async () => {
+			const { sandboxID } = await service.create({});
+			await expect(service.connect(sandboxID, 0)).rejects.toThrow(
+				/greater than 0/,
+			);
+			await expect(service.setTimeout(sandboxID, -1)).rejects.toThrow(
+				/negative/,
+			);
+			await service.setTimeout(sandboxID, 0);
+		});
+
 		it("never shortens a running sandbox's remaining time", async () => {
 			const { sandboxID } = await service.create({ timeout: 600 });
 			await service.connect(sandboxID, 10);
@@ -549,6 +577,99 @@ describe("SandboxService", () => {
 				second.sandboxID,
 				first.sandboxID,
 			]);
+		});
+	});
+
+	describe("list filters", () => {
+		it("treat startedAfter as inclusive and match the template", async () => {
+			const old = await service.create({ templateID: "base" });
+			await vi.advanceTimersByTimeAsync(1_000);
+			const { sandboxID } = await service.create({ templateID: "app" });
+			const startedAt = new Date(Date.now()).toISOString();
+			const ids = async (filters: Parameters<SandboxService["list"]>[0]) =>
+				(await service.list(filters)).map((s) => s.sandboxID);
+
+			expect(await ids({ startedAfter: startedAt })).toEqual([sandboxID]);
+			expect(
+				await ids({ startedAfter: new Date(Date.now() + 1_000).toISOString() }),
+			).toEqual([]);
+			expect(await ids({ template: "base" })).toEqual([old.sandboxID]);
+		});
+	});
+
+	describe("template references", () => {
+		it("report a tagged template by its name, as E2B does, and filter by it", async () => {
+			const { sandboxID, templateID } = await service.create({
+				templateID: "app:v1",
+			});
+			expect(templateID).toBe("app");
+			expect((await service.getInfo(sandboxID))?.templateID).toBe("app");
+			expect(
+				(await service.list({ template: "app" })).map((s) => s.sandboxID),
+			).toEqual([sandboxID]);
+			// The tag still picks the image.
+			expect(backend.get(sandboxID).opts.templateId).toBe("app:v1");
+		});
+	});
+
+	describe("snapshot", () => {
+		it("names a snapshot <name>:<tag>, and an unnamed one has no names", async () => {
+			const { sandboxID } = await service.create({});
+
+			const unnamed = await service.snapshot(sandboxID, {});
+			expect(unnamed.snapshotID).toMatch(/^snapshot-[a-z0-9]+:default$/);
+			expect(unnamed.names).toEqual([]);
+			expect(await service.snapshot(sandboxID, { name: "app" })).toEqual({
+				snapshotID: "app:default",
+				names: ["app"],
+			});
+			expect(await service.snapshot(sandboxID, { name: "app:v2" })).toEqual({
+				snapshotID: "app:v2",
+				names: ["app"],
+			});
+			// Every label is set, so a snapshot of a sandbox started from a named
+			// snapshot does not inherit its name.
+			expect(backend.commits.map((c) => c.labels["e2b.snapshot-name"])).toEqual(
+				["", "app", "app"],
+			);
+		});
+
+		it("rejects a memory snapshot and a name Docker cannot use", async () => {
+			const { sandboxID } = await service.create({});
+			await expect(
+				service.snapshot(sandboxID, { memory: true }),
+			).rejects.toBeInstanceOf(UnsupportedError);
+			await expect(
+				service.snapshot(sandboxID, { name: "My App" }),
+			).rejects.toBeInstanceOf(UnsupportedError);
+			expect(backend.commits).toEqual([]);
+		});
+	});
+
+	describe("fork", () => {
+		it("starts forks from the saved filesystem, reporting the source template, for 15 s", async () => {
+			const { sandboxID } = await service.create({ templateID: "app" });
+			const [result] = await service.fork(sandboxID, {});
+			const fork = result?.sandbox;
+			expect(fork?.sandboxID).not.toBe(sandboxID);
+
+			const { opts } = backend.get(fork?.sandboxID ?? "");
+			expect(opts.templateId).toBe("app");
+			expect(opts.imageTemplateId).toBe(backend.commits[0]?.templateId);
+			expect(opts.imageTemplateId).toMatch(/^fork-/);
+			expect(opts.timeoutSec).toBe(15);
+		});
+
+		it("rejects forking a paused sandbox, or with a timeout of 0, before saving anything", async () => {
+			const { sandboxID } = await service.create({});
+			await expect(service.fork(sandboxID, { timeout: 0 })).rejects.toThrow(
+				/greater than 0/,
+			);
+			await service.pause(sandboxID);
+			await expect(service.fork(sandboxID, {})).rejects.toBeInstanceOf(
+				ConflictError,
+			);
+			expect(backend.commits).toEqual([]);
 		});
 	});
 

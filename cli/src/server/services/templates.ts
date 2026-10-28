@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -72,7 +72,7 @@ export class TemplateService {
 				`Template name "${name}" must be lowercase letters, digits, ".", "_" or "-"`,
 			);
 		}
-		const buildID = nanoid();
+		const buildID = randomUUID();
 		this.builds.set(buildID, {
 			templateID: name,
 			buildID,
@@ -168,7 +168,7 @@ export class TemplateService {
 		if (!(await this.docker.templateExists(target))) {
 			throw new NotFoundError(`Template ${target} not found`);
 		}
-		const buildID = await this.docker.tagTemplate(target, tags);
+		const buildID = buildUuid(await this.docker.tagTemplate(target, tags));
 		return { buildID, tags };
 	}
 
@@ -184,33 +184,48 @@ export class TemplateService {
 			.filter((image) => image.ref.startsWith(`${repo}:`))
 			.map((image) => ({
 				tag: image.ref.slice(repo.length + 1),
-				buildID: image.id,
+				buildID: buildUuid(image.id),
 				createdAt: image.createdAt,
 			}));
 	}
 
 	/**
-	 * Snapshot templates as E2B lists them, one per tag (<name>:<tag>),
-	 * optionally only those from one sandbox or with one name (a name with a
-	 * tag matches that tag only).
+	 * One entry per snapshot, showing its newest build, as E2B lists them. A
+	 * name filter with a tag (<name>:<tag>) shows that tag's build instead.
 	 */
 	async listSnapshots(sandboxId?: string, name?: string) {
-		const images = await this.docker.listTemplateImages("e2b.snapshot=true");
-		return images
+		const [wantName, wantTag] = name?.split(":") ?? [];
+		const builds = (await this.docker.listTemplateImages("e2b.snapshot=true"))
 			.filter(
 				(image) => !sandboxId || image.labels["e2b.snapshot-of"] === sandboxId,
 			)
 			.map((image) => {
 				const snapshotID = image.ref.slice("sandbox-".length);
-				return { snapshotID, names: [snapshotID.split(":")[0] ?? snapshotID] };
+				const [repo = snapshotID, tag] = snapshotID.split(":");
+				return {
+					snapshotID,
+					repo,
+					tag,
+					// Snapshots from before the label existed were all named.
+					named: image.labels["e2b.snapshot-name"] !== "",
+					at:
+						Number(image.labels["e2b.snapshot-at"]) ||
+						Date.parse(image.createdAt),
+				};
 			})
 			.filter(
-				(snap) =>
-					!name ||
-					(name.includes(":")
-						? snap.snapshotID === name
-						: snap.names[0] === name),
+				(b) =>
+					!wantName || (b.repo === wantName && (!wantTag || b.tag === wantTag)),
 			);
+		const newest = new Map<string, (typeof builds)[number]>();
+		for (const build of builds) {
+			const current = newest.get(build.repo);
+			if (!current || build.at > current.at) newest.set(build.repo, build);
+		}
+		return [...newest.values()].map((b) => ({
+			snapshotID: b.snapshotID,
+			names: b.named ? [b.repo] : [],
+		}));
 	}
 
 	/**
@@ -365,4 +380,22 @@ export class TemplateService {
 			rmSync(context, { recursive: true, force: true });
 		}
 	}
+}
+
+/**
+ * E2B build IDs are UUIDs; a Docker image ID (sha256:<64 hex>) becomes one
+ * from its first 32 hex digits, so one image always has the same build ID.
+ */
+function buildUuid(imageId: string): string {
+	const hex = imageId
+		.replace(/^sha256:/, "")
+		.slice(0, 32)
+		.padEnd(32, "0");
+	return [
+		hex.slice(0, 8),
+		hex.slice(8, 12),
+		hex.slice(12, 16),
+		hex.slice(16, 20),
+		hex.slice(20),
+	].join("-");
 }

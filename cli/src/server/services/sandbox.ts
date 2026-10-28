@@ -152,8 +152,19 @@ export class SandboxService {
 		this.ttl.start(p.sandboxId, p.timeoutSec, () => this.expire(p.sandboxId));
 	}
 
-	/** A requested timeout, rejected beyond the maximum as E2B rejects it. */
-	private timeoutWithinLimit(timeoutSec: number): number {
+	/**
+	 * A requested timeout, rejected outside E2B's bounds as E2B rejects it:
+	 * create, connect, and fork need at least a second; setTimeout and
+	 * refresh accept 0.
+	 */
+	private timeoutWithinLimit(timeoutSec: number, min = 1): number {
+		if (timeoutSec < min) {
+			throw new UnsupportedError(
+				min === 1
+					? "timeout must be greater than 0"
+					: "timeout must not be negative",
+			);
+		}
 		if (timeoutSec > config.maxTimeoutSec) {
 			throw new UnsupportedError(
 				`timeout must be at most ${config.maxTimeoutSec} seconds`,
@@ -183,7 +194,7 @@ export class SandboxService {
 	) {
 		return {
 			sandboxID: p.sandboxId,
-			templateID: p.templateId,
+			templateID: templateName(p.templateId),
 			clientID: E2B_CLIENT_ID,
 			envdVersion,
 			envdAccessToken: p.lifecycle.secure ? p.accessToken : null,
@@ -261,7 +272,7 @@ export class SandboxService {
 	private detail(info: SandboxInfo, envdVersion: string) {
 		return {
 			sandboxID: info.sandboxId,
-			templateID: info.templateId,
+			templateID: templateName(info.templateId),
 			clientID: E2B_CLIENT_ID,
 			envdVersion,
 			domain: null,
@@ -473,11 +484,16 @@ export class SandboxService {
 			);
 		}
 		const snapshotID = `${name}:${tag}`;
+		// Set every label, so none is inherited from a snapshot this sandbox
+		// started from.
 		await backend.commitTemplate(sandboxId, snapshotID, {
 			"e2b.snapshot": "true",
 			"e2b.snapshot-of": sandboxId,
+			"e2b.snapshot-name": opts.name ? name : "",
+			"e2b.snapshot-at": String(Date.now()),
 		});
-		return { snapshotID, names: [name] };
+		// An unnamed snapshot has no names, as in E2B.
+		return { snapshotID, names: opts.name ? [name] : [] };
 	}
 
 	/**
@@ -513,6 +529,7 @@ export class SandboxService {
 			);
 		}
 
+		this.timeoutWithinLimit(opts.timeout ?? 15);
 		const forkTemplate = `fork-${generateImageSuffix()}`;
 		await backend.commitTemplate(sandboxId, forkTemplate, {
 			"e2b.fork-of": sandboxId,
@@ -592,7 +609,7 @@ export class SandboxService {
 
 	async setTimeout(sandboxId: string, timeoutSec: number): Promise<void> {
 		sandboxId = await this.canonical(sandboxId);
-		const timeout = this.timeoutWithinLimit(timeoutSec);
+		const timeout = this.timeoutWithinLimit(timeoutSec, 0);
 		const found = await this.locate(sandboxId);
 		if (!found) {
 			throw new NotFoundError(
@@ -612,7 +629,7 @@ export class SandboxService {
 	 */
 	async refresh(sandboxId: string, durationSec: number): Promise<void> {
 		sandboxId = await this.canonical(sandboxId);
-		const duration = this.timeoutWithinLimit(durationSec);
+		const duration = this.timeoutWithinLimit(durationSec, 0);
 		const found = await this.locate(sandboxId);
 		if (!found) {
 			throw new NotFoundError(
@@ -686,12 +703,14 @@ export class SandboxService {
 				),
 			)
 			.filter(
-				({ info }) => !filters.template || info.templateId === filters.template,
+				({ info }) =>
+					!filters.template ||
+					templateName(info.templateId) === templateName(filters.template),
 			)
 			.filter(
 				({ info }) =>
 					!filters.startedAfter ||
-					Date.parse(info.createdAt) > Date.parse(filters.startedAfter),
+					Date.parse(info.createdAt) >= Date.parse(filters.startedAfter),
 			)
 			.sort(
 				({ info: a }, { info: b }) =>
@@ -707,3 +726,8 @@ export class SandboxService {
 }
 
 export { NotFoundError, UnsupportedError };
+
+/** A template reference without its tag, as E2B reports the template of a sandbox. */
+function templateName(templateId: string): string {
+	return templateId.split(":")[0] ?? templateId;
+}

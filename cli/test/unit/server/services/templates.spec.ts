@@ -217,6 +217,72 @@ describe("TemplateService", () => {
 		expect(service.status(templateID, buildID, total).logEntries).toEqual([]);
 	});
 
+	it("lists one entry per snapshot, its newest build unless a tag is asked for", async () => {
+		const image = (ref: string, labels: Record<string, string>) => ({
+			ref: `sandbox-${ref}`,
+			id: ref,
+			createdAt: "2026-10-28T00:00:00.000Z",
+			labels: { "e2b.snapshot": "true", "e2b.snapshot-of": "sbx-a", ...labels },
+		});
+		const docker = {
+			listTemplateImages: vi.fn(async () => [
+				image("app:default", {
+					"e2b.snapshot-name": "app",
+					"e2b.snapshot-at": "1",
+				}),
+				image("app:v2", { "e2b.snapshot-name": "app", "e2b.snapshot-at": "2" }),
+				image("snapshot-x:default", { "e2b.snapshot-name": "" }),
+				// Made before the name label existed: named.
+				image("old:default", { "e2b.snapshot-of": "sbx-b" }),
+			]),
+		} as unknown as DockerService;
+		const service = new TemplateService(docker, filesDir);
+
+		expect(await service.listSnapshots()).toEqual([
+			{ snapshotID: "app:v2", names: ["app"] },
+			{ snapshotID: "snapshot-x:default", names: [] },
+			{ snapshotID: "old:default", names: ["old"] },
+		]);
+		expect(await service.listSnapshots(undefined, "app")).toEqual([
+			{ snapshotID: "app:v2", names: ["app"] },
+		]);
+		expect(await service.listSnapshots(undefined, "app:default")).toEqual([
+			{ snapshotID: "app:default", names: ["app"] },
+		]);
+		expect(await service.listSnapshots(undefined, "app:missing")).toEqual([]);
+		expect(await service.listSnapshots(undefined, "snapshot-x")).toEqual([
+			{ snapshotID: "snapshot-x:default", names: [] },
+		]);
+		expect(await service.listSnapshots("sbx-b")).toEqual([
+			{ snapshotID: "old:default", names: ["old"] },
+		]);
+	});
+
+	it("gives builds UUIDs, as E2B does, the same for one image", async () => {
+		const imageId = `sha256:${"ab12".repeat(16)}`;
+		const docker = {
+			templateExists: vi.fn(async () => true),
+			tagTemplate: vi.fn(async () => imageId),
+			listTemplateImages: vi.fn(async () => [
+				{
+					ref: "sandbox-app:latest",
+					id: imageId,
+					createdAt: "2026-10-28T00:00:00.000Z",
+					labels: {},
+				},
+			]),
+		} as unknown as DockerService;
+		const service = new TemplateService(docker, filesDir);
+		const uuid =
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+		const { buildID } = await service.assignTags("app", ["v1"]);
+		expect(buildID).toMatch(uuid);
+		const [tag] = await service.listTags("app");
+		expect(tag?.buildID).toBe(buildID);
+		expect(service.requestBuild({ name: "app" }).buildID).toMatch(uuid);
+	});
+
 	it("does not know builds of another template", () => {
 		const { docker } = fakeDocker();
 		const service = new TemplateService(docker, filesDir);

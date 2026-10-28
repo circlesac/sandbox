@@ -94,8 +94,8 @@ export class DockerService implements ContainerBackend {
 	 * download continues in the background and a retry picks it up.
 	 */
 	async resolveImage(templateId: string): Promise<string> {
-		const local = localImageName(templateId);
-		if (await this.imageExists(local)) return local;
+		const local = await this.localTemplateImage(templateId);
+		if (local) return local;
 
 		const remote = registryImageName(templateId);
 		if (await this.imageExists(remote)) return remote;
@@ -170,11 +170,26 @@ export class DockerService implements ContainerBackend {
 	}
 
 	async templateExists(templateId: string): Promise<boolean> {
-		return this.imageExists(localImageName(templateId));
+		return (await this.localTemplateImage(templateId)) !== null;
+	}
+
+	/**
+	 * The local image of a template. A bare name means its "latest" build, or
+	 * for a snapshot, which E2B tags "default", that tag.
+	 */
+	private async localTemplateImage(templateId: string): Promise<string | null> {
+		const local = localImageName(templateId);
+		if (await this.imageExists(local)) return local;
+		if (templateId.includes(":")) return null;
+		const snapshot = localImageName(`${templateId}:default`);
+		return (await this.imageExists(snapshot)) ? snapshot : null;
 	}
 
 	async tagTemplate(sourceTemplateId: string, tags: string[]): Promise<string> {
-		const source = this.docker.getImage(localImageName(sourceTemplateId));
+		const source = this.docker.getImage(
+			(await this.localTemplateImage(sourceTemplateId)) ??
+				localImageName(sourceTemplateId),
+		);
 		const info = await source.inspect();
 		const { repo } = templateImage(sourceTemplateId);
 		for (const tag of tags) await source.tag({ repo, tag });

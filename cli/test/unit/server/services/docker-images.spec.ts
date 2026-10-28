@@ -68,6 +68,18 @@ describe("DockerService image resolution", () => {
 		expect(pull).not.toHaveBeenCalled();
 	});
 
+	it("resolves a snapshot's bare name to its default tag, as E2B does", async () => {
+		cached.add("sandbox-snap:default");
+		const docker = backend();
+		await expect(docker.resolveImage("snap")).resolves.toBe(
+			"sandbox-snap:default",
+		);
+		expect(await docker.templateExists("snap")).toBe(true);
+		// An explicit tag means only that tag.
+		expect(await docker.templateExists("snap:latest")).toBe(false);
+		expect(pull).not.toHaveBeenCalled();
+	});
+
 	it("uses a cached registry image without pulling it again", async () => {
 		cached.add(REMOTE);
 		await expect(backend().resolveImage("base")).resolves.toBe(REMOTE);

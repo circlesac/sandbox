@@ -3,7 +3,7 @@
 // server deliberately lacks (Firecracker snapshots, egress rules, volumes), so
 // failures are reported, not treated as an error.
 //
-//   bun run test:upstream [--commit <sha>] [--out <report.md>] [-- <go test -run regex>]
+//   bun run test:upstream [--commit <sha>] [--out <report.md>] [--run <go test -run regex>]
 import { spawn, spawnSync } from "node:child_process";
 import {
 	existsSync,
@@ -24,9 +24,8 @@ const option = (name: string) => {
 };
 const commit = option("--commit") ?? "518278060a154124a80d98f37253f8af77baf478";
 const out = option("--out");
-const runFilter = args.includes("--")
-	? args.slice(args.indexOf("--") + 1).join("|")
-	: "";
+// Not after "--": bun run drops it.
+const runFilter = option("--run") ?? "";
 const SUITES = [
 	"./internal/tests/api/",
 	"./internal/tests/api/sandboxes/",

@@ -21,7 +21,7 @@ bun run format           # apply formatting
 
 `test:docker`, `test:tart`, and `test:shuru` fail with the missing prerequisite when the provider is not set up, instead of skipping. `test:local` runs what this machine can, including envd-lite when Go and protoc are installed, and lists what it could not run and why.
 
-`test:upstream` checks out a pinned commit of [e2b-dev/runtime](https://github.com/e2b-dev/runtime) under `~/.cache/sandbox`, starts a control plane, and runs upstream's `tests/integration` API and envd suites against it. Many of those tests cover E2B Cloud features this server does not have, so it prints a pass/fail table (`--out <file>` saves it) and does not fail on test failures. Pass `-- <regex>` to run a subset.
+`test:upstream` checks out a pinned commit of [e2b-dev/runtime](https://github.com/e2b-dev/runtime) under `~/.cache/sandbox`, starts a control plane, and runs upstream's `tests/integration` API and envd suites against it. Many of those tests cover E2B Cloud features this server does not have, so it prints a pass/fail table (`--out <file>` saves it) and does not fail on test failures. Pass `--run <regex>` to run a subset.
 
 `test:coverage` counts only code that runs inside the vitest process. The integration suites drive a server started as a separate process, so the routes, proxy, and envd client they exercise appear uncovered there.
 
