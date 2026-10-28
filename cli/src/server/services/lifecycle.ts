@@ -93,6 +93,9 @@ export function lifecycleFromCreate(
 			`Unsupported sandbox options: ${unsupported.join(", ")}`,
 		);
 	}
+	if (req.autoPauseMemory === false && !autoPause) {
+		throw new UnsupportedError("autoPauseMemory requires autoPause");
+	}
 	if (autoResume && !autoPause) {
 		throw new UnsupportedError("autoResume requires autoPause");
 	}

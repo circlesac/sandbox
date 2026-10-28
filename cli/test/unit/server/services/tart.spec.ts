@@ -37,7 +37,14 @@ vi.mock("node:net", () => ({
 }));
 
 // Mock Bun.spawn
-const mockProc = { pid: 12345 };
+const mockProc: {
+	pid: number;
+	exitCode: number | null;
+	stderr?: ReadableStream;
+} = {
+	pid: 12345,
+	exitCode: null,
+};
 const spawnMock = vi.fn().mockReturnValue(mockProc);
 globalThis.Bun = { spawn: spawnMock } as unknown as typeof Bun;
 
@@ -138,7 +145,7 @@ describe("TartBackend", () => {
 			// Verify tart run was spawned with --suspendable
 			expect(spawnMock).toHaveBeenCalledWith(
 				["tart", "run", "sandbox-sbx-test1", "--no-graphics", "--suspendable"],
-				{ stdio: ["ignore", "ignore", "ignore"] },
+				{ stdio: ["ignore", "ignore", "pipe"] },
 			);
 
 			// envd goes through the local proxy; other ports to the VM's address
@@ -154,6 +161,44 @@ describe("TartBackend", () => {
 			await expect(
 				backend.stopContainer("sbx-test1", { keepMemory: false }),
 			).rejects.toThrow(/cannot pause without keeping memory/);
+		});
+	});
+
+	describe("createContainer when tart cannot start the VM", () => {
+		it("reports tart's own error instead of a generic IP timeout", async () => {
+			execSyncMock.mockImplementation((cmd: string) => {
+				if (cmd.startsWith("tart list")) {
+					return JSON.stringify([{ Name: "sandbox-base", State: "stopped" }]);
+				}
+				if (cmd.startsWith("tart ip")) throw new Error("no IP");
+				return "";
+			});
+			mockProc.exitCode = 1;
+			mockProc.stderr =
+				new Response(
+					"The number of VMs exceeds the system limit (other running VMs: a, b)\n",
+				).body ?? undefined;
+			vi.useRealTimers();
+			const originalSetTimeout = globalThis.setTimeout;
+			globalThis.setTimeout = ((fn: () => void) =>
+				originalSetTimeout(fn, 0)) as typeof setTimeout;
+			try {
+				await expect(
+					backend.createContainer({
+						sandboxId: "sbx-limit",
+						accessToken: "t",
+						templateId: "base",
+						timeoutSec: 300,
+						lifecycle: LEGACY_LIFECYCLE,
+					}),
+				).rejects.toThrow(
+					/did not start: The number of VMs exceeds the system limit/,
+				);
+			} finally {
+				globalThis.setTimeout = originalSetTimeout;
+				mockProc.exitCode = null;
+				mockProc.stderr = undefined;
+			}
 		});
 	});
 
@@ -175,6 +220,60 @@ describe("TartBackend", () => {
 		it("returns null for unknown sandbox", async () => {
 			const result = await backend.inspectSandbox("sbx-unknown");
 			expect(result).toBeNull();
+		});
+	});
+
+	describe("a pause the host cannot save", () => {
+		const addInstance = (id: string) =>
+			(backend as unknown as { instances: Map<string, unknown> }).instances.set(
+				id,
+				{
+					sandboxId: id,
+					vmName: `sandbox-${id}`,
+					hostPort: 1,
+					accessToken: "t",
+					templateId: "base",
+					createdAt: new Date().toISOString(),
+					timeoutSec: 300,
+					lifecycle: LEGACY_LIFECYCLE,
+				},
+			);
+
+		it("keeps the stopped VM as a paused sandbox instead of deleting it", async () => {
+			addInstance("sbx-p");
+			execSyncMock.mockImplementation((cmd: string) =>
+				cmd.startsWith("tart list")
+					? JSON.stringify([{ Name: "sandbox-sbx-p", State: "stopped" }])
+					: "",
+			);
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			expect(await backend.stopContainer("sbx-p")).toBe(true);
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringMatching(/could not save VM/),
+			);
+
+			const [info] = await backend.listSandboxes();
+			expect(info?.state).toBe("paused");
+			expect(execSyncMock).not.toHaveBeenCalledWith(
+				expect.stringMatching(/^tart delete/),
+				expect.anything(),
+			);
+		});
+
+		it("still cleans up a VM that stopped by itself", async () => {
+			addInstance("sbx-done");
+			execSyncMock.mockImplementation((cmd: string) =>
+				cmd.startsWith("tart list")
+					? JSON.stringify([{ Name: "sandbox-sbx-done", State: "stopped" }])
+					: "",
+			);
+			vi.spyOn(console, "log").mockImplementation(() => {});
+			expect(await backend.listSandboxes()).toHaveLength(0);
+			expect(execSyncMock).toHaveBeenCalledWith(
+				"tart delete sandbox-sbx-done",
+				expect.anything(),
+			);
 		});
 	});
 

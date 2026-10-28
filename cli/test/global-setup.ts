@@ -62,6 +62,9 @@ export default async function setup() {
 			PORT: String(port),
 			ENVD_PROXY_PORT: String(port),
 			API_KEYS: TEST_API_KEY,
+			// This server tests Docker. With Tart enabled it would treat the Tart
+			// suite's VMs as orphans and delete them.
+			SANDBOX_MACOS_BACKEND: "",
 		},
 		stdio: "pipe",
 	});

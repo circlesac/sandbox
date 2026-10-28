@@ -32,6 +32,8 @@ function inspectInfo() {
 	};
 }
 
+let removeError: Error | null = null;
+
 vi.mock("dockerode", () => ({
 	default: class {
 		getContainer() {
@@ -52,6 +54,9 @@ vi.mock("dockerode", () => ({
 				start: async () => {
 					container.calls.push("start");
 					container.running = true;
+				},
+				remove: async () => {
+					if (removeError) throw removeError;
 				},
 			};
 		}
@@ -146,5 +151,15 @@ describe("DockerService.resolveTarget", () => {
 		container.paused = false;
 		container.running = false;
 		expect(await backend().resolveTarget("sbx-a", 49983)).toBeNull();
+	});
+});
+
+describe("DockerService.removeContainer", () => {
+	it("treats a remove already under way as gone, not as an error", async () => {
+		removeError = Object.assign(new Error("removal already in progress"), {
+			statusCode: 409,
+		});
+		await expect(backend().removeContainer("sbx-a")).resolves.toBe(false);
+		removeError = null;
 	});
 });

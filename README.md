@@ -53,8 +53,8 @@ returns whenever the OrbStack Docker engine starts.
 ### Shuru (Linux microVMs on macOS)
 
 ```bash
-brew install shuru
-shuru checkpoint create sandbox-base --allow-net -- sh -c '...'
+brew install superhq-ai/tap/shuru
+# Create the sandbox-base checkpoint with envd: see docs/container-runtimes.md
 
 # Set backend
 # ~/.sandbox/config.json → { "backend": "shuru" }
@@ -164,7 +164,7 @@ bun run smoke:pty
 | Create, commands, PTY, files | Yes | Yes | Yes |
 | `secure` (envd access token) | Enforced by envd | Enforced by envd-lite and the control plane | Enforced by the control plane |
 | Timeout kills the sandbox (E2B default) | Yes | Yes | Yes |
-| `onTimeout: "pause"` / `Sandbox.pause()`, keeping memory | Yes (container frozen) | Yes (VM suspended) | 400 |
+| `onTimeout: "pause"` / `Sandbox.pause()`, keeping memory | Yes (container frozen) | Yes (VM suspended); where the host cannot save VM state, the VM stops and keeps only its disk | 400 |
 | Filesystem-only pause (`autoPauseMemory: false`, `memory: false`) | Yes (container stopped) | 400 | 400 |
 | `autoResume` on traffic | Yes | Yes | No pause, so 400 |
 | Any port via `getHost(port)` or `E2b-Sandbox-Port` | Yes on Linux and OrbStack; not Docker Desktop for Mac | Yes | envd's port only |

@@ -71,6 +71,12 @@ describe("lifecycleFromCreate", () => {
 		).toThrow(/autoPauseMemory: false on the tart backend/);
 	});
 
+	it("rejects autoPauseMemory: false without autoPause, as E2B does", () => {
+		expect(() =>
+			lifecycleFromCreate({ autoPauseMemory: false }, docker),
+		).toThrow(/autoPauseMemory requires autoPause/);
+	});
+
 	it("rejects autoPause on a backend that cannot pause", () => {
 		expect(() => lifecycleFromCreate({ autoPause: true }, shuru)).toThrow(
 			/autoPause on the shuru backend/,

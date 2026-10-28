@@ -5,7 +5,13 @@
 //
 //   bun run test:upstream [--commit <sha>] [--out <report.md>] [-- <go test -run regex>]
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -85,9 +91,23 @@ try {
 		await new Promise((r) => setTimeout(r, 500));
 	}
 
-	// 3. The upstream suites, as JSON events.
-	const goArgs = ["test", "-json", "-count=1", "-timeout", "40m", ...SUITES];
+	// 3. The upstream suites, as JSON events. Tests that read E2B's own
+	// Postgres panic without it and abort their whole package, so skip them.
+	const dbTests = testsNeedingDatabase(join(repo, "tests", "integration"));
+	// One package at a time and a few tests at once: upstream sizes its
+	// parallelism for a cloud cluster, and a laptop's Docker would time out.
+	const goArgs = [
+		"test",
+		"-json",
+		"-count=1",
+		"-p=1",
+		"-parallel=4",
+		"-timeout",
+		"60m",
+		...SUITES,
+	];
 	if (runFilter) goArgs.push("-run", runFilter);
+	if (dbTests.length > 0) goArgs.push("-skip", `^(${dbTests.join("|")})$`);
 	const test = spawnSync("go", goArgs, {
 		cwd: join(repo, "tests", "integration"),
 		env: {
@@ -121,8 +141,15 @@ try {
 		throw new Error("go test produced no results");
 	}
 
+	for (const name of dbTests) {
+		const pkg = [...results.keys()]
+			.find((k) => k.endsWith(` ${name}`))
+			?.split(" ")[0];
+		results.set(`${pkg ?? "?"} ${name}`, "skip (needs E2B's Postgres)");
+	}
 	const rows = [...results.entries()].sort(([a], [b]) => a.localeCompare(b));
-	const count = (action: string) => rows.filter(([, r]) => r === action).length;
+	const count = (action: string) =>
+		rows.filter(([, r]) => r.startsWith(action)).length;
 	const report = [
 		`e2b-dev/runtime@${commit.slice(0, 7)} against this server: ${count("pass")} passed, ${count("fail")} failed, ${count("skip")} skipped`,
 		"",
@@ -137,4 +164,40 @@ try {
 	if (out) writeFileSync(out, `${report}\n`);
 } finally {
 	server.kill("SIGTERM");
+}
+
+/**
+ * Top-level tests in the suites that reach setup.GetTestDBClient, directly
+ * or through helpers in the same package.
+ */
+function testsNeedingDatabase(root: string): string[] {
+	const names: string[] = [];
+	for (const suite of SUITES) {
+		const dir = join(root, suite);
+		const bodies = new Map<string, string>();
+		for (const file of readdirSync(dir).filter((f) => f.endsWith("_test.go"))) {
+			const source = readFileSync(join(dir, file), "utf-8");
+			const parts = source.split(/^func (?:\([^)]*\) )?(\w+)\(/m);
+			for (let i = 1; i + 1 < parts.length; i += 2) {
+				bodies.set(parts[i] ?? "", parts[i + 1] ?? "");
+			}
+		}
+		const needs = new Set(
+			[...bodies]
+				.filter(([, body]) => body.includes("GetTestDBClient("))
+				.map(([n]) => n),
+		);
+		for (let grew = true; grew; ) {
+			grew = false;
+			for (const [name, body] of bodies) {
+				if (needs.has(name)) continue;
+				if ([...needs].some((n) => new RegExp(`\\b${n}\\(`).test(body))) {
+					needs.add(name);
+					grew = true;
+				}
+			}
+		}
+		names.push(...[...needs].filter((n) => /^Test/.test(n)));
+	}
+	return names;
 }

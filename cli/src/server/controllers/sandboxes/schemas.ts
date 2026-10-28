@@ -41,6 +41,10 @@ export const SandboxDetailSchema = z.object({
 		.optional()
 		.describe("Arbitrary metadata"),
 	state: z.enum(["running", "paused"]).describe("Sandbox state"),
+	envdAccessToken: z
+		.string()
+		.optional()
+		.describe("Token for envd access, when the sandbox is secure"),
 });
 
 export const ConnectBodySchema = z.object({

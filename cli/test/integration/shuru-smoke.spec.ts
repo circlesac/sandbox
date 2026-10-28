@@ -190,6 +190,39 @@ describe.skipIf(skip)("Shuru E2B Smoke", { timeout: 180_000 }, () => {
 		});
 	});
 
+	// ── Access token, ports, lifecycle ─────────────────────────
+
+	describe("Access token, ports, and lifecycle", () => {
+		it("rejects envd requests without the access token, which this envd cannot check", async () => {
+			const res = await fetch(`${opts.apiUrl}/files?path=/tmp/test.txt`, {
+				headers: { "E2b-Sandbox-Id": sandbox.sandboxId },
+			});
+			expect(res.status).toBe(401);
+		});
+
+		it("explains that only envd's port is forwarded", async () => {
+			const res = await fetch(`${opts.apiUrl}/`, {
+				headers: {
+					"E2b-Sandbox-Id": sandbox.sandboxId,
+					"E2b-Sandbox-Port": "3000",
+				},
+			});
+			expect(res.status).toBe(502);
+			expect(await res.text()).toContain("only envd's port is forwarded");
+		});
+
+		it("rejects autoPause, since Shuru VMs cannot pause", async () => {
+			await expect(
+				Sandbox.create("base", { ...opts, lifecycle: { onTimeout: "pause" } }),
+			).rejects.toThrow(/autoPause on the shuru backend/);
+		});
+
+		it("reports envd's resource use", async () => {
+			const [sample] = await sandbox.getMetrics();
+			expect(sample?.cpuCount).toBeGreaterThan(0);
+		});
+	});
+
 	// ── Pause (unsupported) ────────────────────────────────────
 
 	describe("Pause", () => {

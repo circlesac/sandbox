@@ -155,16 +155,29 @@ describe("sandbox controllers", () => {
 	});
 
 	describe("POST /sandboxes/:sandboxID/resume", () => {
-		it("returns 200 with connect response", async () => {
-			const res = await app.request("/sandboxes/sbx-test123/resume", {
+		const resume = () =>
+			app.request("/sandboxes/sbx-test123/resume", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ timeout: 300 }),
 			});
 
-			expect(res.status).toBe(200);
+		it("returns 201 with the connect response after resuming a paused sandbox", async () => {
+			vi.mocked(service.getInfo).mockResolvedValueOnce({
+				state: "paused",
+			} as never);
+			const res = await resume();
+			expect(res.status).toBe(201);
 			const body = (await res.json()) as Record<string, unknown>;
 			expect(body.sandboxID).toBe("sbx-test123");
+		});
+
+		it("returns 409 for a sandbox that is already running, as E2B does", async () => {
+			vi.mocked(service.getInfo).mockResolvedValueOnce({
+				state: "running",
+			} as never);
+			expect((await resume()).status).toBe(409);
+			expect(service.connect).not.toHaveBeenCalled();
 		});
 
 		it("returns 404 for unknown sandbox", async () => {
@@ -210,6 +223,21 @@ describe("sandbox controllers", () => {
 			expect(json.sandboxID).toBe("sbx-test123");
 			expect(json.envdAccessToken).toBe("token-abc");
 			expect(service.create).toHaveBeenCalledWith(body, expect.any(Object));
+		});
+	});
+
+	describe("POST /sandboxes/:sandboxID/connect status", () => {
+		it("is 201 when it resumed a paused sandbox and 200 when it was running", async () => {
+			const connect = () =>
+				app.request("/sandboxes/sbx-test123/connect", { method: "POST" });
+			vi.mocked(service.getInfo).mockResolvedValueOnce({
+				state: "paused",
+			} as never);
+			expect((await connect()).status).toBe(201);
+			vi.mocked(service.getInfo).mockResolvedValueOnce({
+				state: "running",
+			} as never);
+			expect((await connect()).status).toBe(200);
 		});
 	});
 
@@ -364,6 +392,16 @@ describe("sandbox controllers", () => {
 				state: ["running", "paused"],
 				metadata: { team: "a", env: "dev" },
 			});
+		});
+
+		it("reports the running total across pages in X-Total-Running", async () => {
+			vi.mocked(service.list).mockResolvedValueOnce([
+				{ sandboxID: "a", state: "running" },
+				{ sandboxID: "b", state: "paused" },
+				{ sandboxID: "c", state: "running" },
+			] as never);
+			const res = await app.request("/v2/sandboxes?limit=1");
+			expect(res.headers.get("X-Total-Running")).toBe("2");
 		});
 
 		it("returns limit items and an x-next-token until the list is exhausted", async () => {

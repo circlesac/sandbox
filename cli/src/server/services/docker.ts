@@ -450,7 +450,8 @@ export class DockerService implements ContainerBackend {
 			const container = this.docker.getContainer(sandboxId);
 			await container.remove({ force: true });
 		} catch (err: unknown) {
-			if (!isDockerNotFound(err)) throw err;
+			// 409: another remove, such as a timeout's, is already under way.
+			if (!isDockerNotFound(err) && !isDockerConflict(err)) throw err;
 			this.clearTimeoutState(sandboxId);
 			return false;
 		}
@@ -722,4 +723,12 @@ function parseLifecycle(labels: SandboxLabels): SandboxLifecycle {
 
 function isGone(status: string | undefined): boolean {
 	return status === "removing" || status === "dead";
+}
+
+function isDockerConflict(err: unknown): boolean {
+	return (
+		err instanceof Error &&
+		"statusCode" in err &&
+		(err as { statusCode: number }).statusCode === 409
+	);
 }

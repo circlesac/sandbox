@@ -22,6 +22,8 @@ interface TartInstance {
 	metadata?: Record<string, string>;
 	lifecycle: SandboxLifecycle;
 	vmIp?: string;
+	/** Paused by this server, so a stopped VM is not a finished runner. */
+	paused?: boolean;
 	proxy?: ReturnType<typeof createServer>;
 }
 
@@ -168,9 +170,11 @@ export class TartBackend implements ContainerBackend {
 		const isSuspended = this.vmIsSuspended(vmName);
 
 		// Start the VM in the background (resume if suspended, cold boot otherwise)
-		Bun.spawn(["tart", "run", vmName, "--no-graphics", "--suspendable"], {
-			stdio: ["ignore", "ignore", "ignore"],
-		});
+		const run = Bun.spawn(
+			["tart", "run", vmName, "--no-graphics", "--suspendable"],
+			{ stdio: ["ignore", "ignore", "pipe"] },
+		);
+		const runError = new Response(run.stderr).text();
 
 		if (!isSuspended) {
 			// Cold boot: wait 10s before polling for IP
@@ -201,8 +205,13 @@ export class TartBackend implements ContainerBackend {
 			try {
 				tartExec(["delete", vmName]);
 			} catch {}
+			// tart run exits at once when it cannot start the VM, for example
+			// "The number of VMs exceeds the system limit" (macOS allows two).
+			const reason = run.exitCode !== null ? (await runError).trim() : "";
 			throw new Error(
-				`Tart VM "${vmName}" failed to obtain an IP address within 190s`,
+				reason
+					? `Tart VM "${vmName}" did not start: ${reason}`
+					: `Tart VM "${vmName}" failed to obtain an IP address within 190s`,
 			);
 		}
 
@@ -270,11 +279,13 @@ export class TartBackend implements ContainerBackend {
 		}
 
 		// Get IP (may have changed after resume). Resume from suspended is fast,
-		// so use short waits — fail fast if anything is wrong.
+		// so use short waits; a stopped VM (a pause the host could not save)
+		// boots from disk and gets the same waits as a new VM.
+		const coldBoot = vm?.state === "stopped";
 		let vmIp: string | undefined;
-		for (let i = 0; i < 2; i++) {
+		for (let i = 0; i < (coldBoot ? 6 : 2); i++) {
 			try {
-				vmIp = tartIp(instance.vmName, 3);
+				vmIp = tartIp(instance.vmName, coldBoot ? 30 : 3);
 				if (vmIp) break;
 			} catch {}
 		}
@@ -284,14 +295,14 @@ export class TartBackend implements ContainerBackend {
 		}
 
 		// Wait for envd-lite to become healthy (suspended resume is near-instant)
-		for (let i = 0; i < 30; i++) {
+		for (let i = 0; i < (coldBoot ? 60 : 30); i++) {
 			try {
 				const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
 				if (res.status === 204) break;
 			} catch {
 				// not ready yet
 			}
-			await new Promise((r) => setTimeout(r, 200));
+			await new Promise((r) => setTimeout(r, coldBoot ? 2000 : 200));
 		}
 
 		// Recreate TCP proxy (previous one was closed on pause)
@@ -300,6 +311,7 @@ export class TartBackend implements ContainerBackend {
 		instance.proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
 		instance.hostPort = hostPort;
 		instance.vmIp = vmIp;
+		instance.paused = false;
 
 		return { hostPort };
 	}
@@ -338,6 +350,7 @@ export class TartBackend implements ContainerBackend {
 
 		instance.proxy?.close();
 		instance.proxy = undefined;
+		instance.paused = true;
 
 		try {
 			tartExec(["suspend", instance.vmName], 60_000);
@@ -348,6 +361,20 @@ export class TartBackend implements ContainerBackend {
 			} catch {}
 		}
 
+		// tart suspend returns before the VM is saved. When the save fails (some
+		// hosts refuse with "permission denied"), the VM stops instead: its disk
+		// survives, its memory and processes do not.
+		for (let i = 0; i < 60; i++) {
+			const state = tartList().find((v) => v.name === instance.vmName)?.state;
+			if (state === "suspended") return true;
+			if (state === "stopped") {
+				console.warn(
+					`Tart could not save VM "${instance.vmName}"; it stopped instead, keeping only its disk`,
+				);
+				return true;
+			}
+			await new Promise((r) => setTimeout(r, 500));
+		}
 		return true;
 	}
 
@@ -415,7 +442,7 @@ export class TartBackend implements ContainerBackend {
 			}
 
 			// VM shut itself down (runner finished) → clean up
-			if (vm.state === "stopped") {
+			if (vm.state === "stopped" && !instance.paused) {
 				console.log(
 					`VM "${instance.vmName}" stopped (runner finished), cleaning up`,
 				);

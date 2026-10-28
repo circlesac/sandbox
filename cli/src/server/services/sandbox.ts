@@ -257,6 +257,7 @@ export class SandboxService {
 			).toISOString(),
 			metadata: info.metadata,
 			state: info.state,
+			envdAccessToken: info.lifecycle.secure ? info.accessToken : undefined,
 		};
 	}
 
@@ -319,7 +320,9 @@ export class SandboxService {
 		sandboxId = await this.canonical(sandboxId);
 		const found = await this.locate(sandboxId);
 		if (!found) {
-			throw new NotFoundError(`Sandbox ${sandboxId} not found`);
+			throw new NotFoundError(
+				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
+			);
 		}
 		const { info, backend } = found;
 
@@ -397,7 +400,10 @@ export class SandboxService {
 	async snapshot(sandboxId: string, opts: { name?: string; memory?: boolean }) {
 		sandboxId = await this.canonical(sandboxId);
 		const found = await this.locate(sandboxId);
-		if (!found) throw new NotFoundError(`Sandbox ${sandboxId} not found`);
+		if (!found)
+			throw new NotFoundError(
+				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
+			);
 		const { backend } = found;
 		if (!backend.commitTemplate) {
 			throw new UnsupportedError(
@@ -439,7 +445,10 @@ export class SandboxService {
 			throw new UnsupportedError("count must be an integer from 1 to 100");
 		}
 		const found = await this.locate(sandboxId);
-		if (!found) throw new NotFoundError(`Sandbox ${sandboxId} not found`);
+		if (!found)
+			throw new NotFoundError(
+				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
+			);
 		const { info, backend } = found;
 		if (!backend.commitTemplate) {
 			throw new UnsupportedError(
@@ -489,7 +498,10 @@ export class SandboxService {
 	async metrics(sandboxId: string) {
 		sandboxId = await this.canonical(sandboxId);
 		const found = await this.locate(sandboxId);
-		if (!found) throw new NotFoundError(`Sandbox ${sandboxId} not found`);
+		if (!found)
+			throw new NotFoundError(
+				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
+			);
 		const { info, backend } = found;
 		if (info.state !== "running") return [];
 		const target = await backend.resolveTarget(sandboxId, config.envdPort);
@@ -523,7 +535,9 @@ export class SandboxService {
 		sandboxId = await this.canonical(sandboxId);
 		const found = await this.locate(sandboxId);
 		if (!found) {
-			throw new NotFoundError(`Sandbox ${sandboxId} not found`);
+			throw new NotFoundError(
+				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
+			);
 		}
 
 		const clamped = Math.min(timeoutSec, config.maxTimeoutSec);
@@ -555,7 +569,7 @@ export class SandboxService {
 		return sandboxes.length;
 	}
 
-	/** Sandboxes matching every given state and metadata pair, oldest first. */
+	/** Sandboxes matching every given state and metadata pair, newest first, as E2B lists them. */
 	async list(
 		filters: {
 			state?: string | string[];
@@ -582,7 +596,7 @@ export class SandboxService {
 			)
 			.sort(
 				({ info: a }, { info: b }) =>
-					a.createdAt.localeCompare(b.createdAt) ||
+					b.createdAt.localeCompare(a.createdAt) ||
 					a.sandboxId.localeCompare(b.sandboxId),
 			);
 		return Promise.all(

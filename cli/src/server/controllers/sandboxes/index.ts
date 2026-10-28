@@ -112,7 +112,10 @@ export class GetSandbox extends OpenAPIRoute {
 		const info = await sandboxService.getInfo(id);
 		if (!info)
 			return c.json(
-				{ error: "not_found", message: `Sandbox ${id} not found` },
+				{
+					error: "not_found",
+					message: `Sandbox ${id} doesn't exist or you don't have access to it`,
+				},
 				404,
 			);
 		return c.json(info, 200);
@@ -144,7 +147,10 @@ export class DeleteSandbox extends OpenAPIRoute {
 		const killed = await sandboxService.kill(id);
 		if (!killed)
 			return c.json(
-				{ error: "not_found", message: `Sandbox ${id} not found` },
+				{
+					error: "not_found",
+					message: `Sandbox ${id} doesn't exist or you don't have access to it`,
+				},
 				404,
 			);
 		return c.body(null, 204);
@@ -179,7 +185,10 @@ export class PauseSandbox extends OpenAPIRoute {
 			const paused = await sandboxService.pause(id, body.memory !== false);
 			if (!paused)
 				return c.json(
-					{ error: "not_found", message: `Sandbox ${id} not found` },
+					{
+						error: "not_found",
+						message: `Sandbox ${id} doesn't exist or you don't have access to it`,
+					},
 					404,
 				);
 			return c.body(null, 204);
@@ -226,21 +235,24 @@ export class ResumeSandbox extends OpenAPIRoute {
 	};
 
 	override async handle(c: Context) {
-		const id = c.req.param("sandboxID");
+		const id = c.req.param("sandboxID") ?? "";
 		const body = await c.req.json().catch(() => ({}));
 		try {
+			const before = await sandboxService.getInfo(id);
+			if (before?.state === "running") {
+				return c.json(
+					{ code: 409, message: `Sandbox ${id} is already running` },
+					409,
+				);
+			}
 			const result = await sandboxService.connect(
 				id,
 				body.timeout,
 				requestContext(c),
 			);
-			return c.json(result, 200);
+			return c.json(result, 201);
 		} catch (err) {
-			if (err instanceof NotFoundError)
-				return c.json({ error: "not_found", message: err.message }, 404);
-			if (err instanceof UnsupportedError)
-				return c.json({ error: "unsupported", message: err.message }, 501);
-			throw err;
+			return errorResponse(c, err);
 		}
 	}
 }
@@ -288,21 +300,18 @@ export class ConnectSandbox extends OpenAPIRoute {
 	};
 
 	override async handle(c: Context) {
-		const id = c.req.param("sandboxID");
+		const id = c.req.param("sandboxID") ?? "";
 		const body = await c.req.json().catch(() => ({}));
 		try {
-			const info = await sandboxService.getInfo(id);
-			const wasPaused = info?.startedAt && !info?.endAt ? false : true;
+			const before = await sandboxService.getInfo(id);
 			const result = await sandboxService.connect(
 				id,
 				body.timeout,
 				requestContext(c),
 			);
-			return c.json(result, wasPaused ? 201 : 200);
+			return c.json(result, before?.state === "paused" ? 201 : 200);
 		} catch (err) {
-			if (err instanceof NotFoundError)
-				return c.json({ error: "not_found", message: err.message }, 404);
-			throw err;
+			return errorResponse(c, err);
 		}
 	}
 }

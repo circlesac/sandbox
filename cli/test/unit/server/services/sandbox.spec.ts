@@ -482,6 +482,18 @@ describe("SandboxService", () => {
 		});
 	});
 
+	describe("list order", () => {
+		it("puts the newest sandbox first, as E2B does", async () => {
+			const first = await service.create({});
+			await vi.advanceTimersByTimeAsync(1_000);
+			const second = await service.create({});
+			expect((await service.list()).map((s) => s.sandboxID)).toEqual([
+				second.sandboxID,
+				first.sandboxID,
+			]);
+		});
+	});
+
 	describe("list and getInfo", () => {
 		it("report each sandbox's state", async () => {
 			const running = await service.create({});
@@ -496,6 +508,9 @@ describe("SandboxService", () => {
 				[paused.sandboxID]: "paused",
 			});
 			expect((await service.getInfo(paused.sandboxID))?.state).toBe("paused");
+			expect((await service.getInfo(running.sandboxID))?.envdAccessToken).toBe(
+				running.envdAccessToken,
+			);
 			expect(await service.getInfo("sbx-missing")).toBeNull();
 		});
 	});

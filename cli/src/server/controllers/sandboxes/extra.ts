@@ -64,7 +64,15 @@ export const ListSandboxesFiltered = endpoint(
 		},
 		responses: { 200: { description: "Sandboxes" } },
 	},
-	async (c) => c.json(page(c, await sandboxes.list(listFilters(c))), 200),
+	async (c) => {
+		const all = await sandboxes.list(listFilters(c));
+		// E2B reports how many matching sandboxes run, across every page.
+		c.header(
+			"X-Total-Running",
+			String(all.filter((s) => s.state === "running").length),
+		);
+		return c.json(page(c, all), 200);
+	},
 );
 
 export const CreateSnapshot = endpoint(
@@ -206,7 +214,9 @@ export const UpdateNetwork = endpoint(
 	async (c) => {
 		const id = c.req.param("sandboxID") ?? "";
 		if (!(await sandboxes.getInfo(id))) {
-			throw new NotFoundError(`Sandbox ${id} not found`);
+			throw new NotFoundError(
+				`Sandbox ${id} doesn't exist or you don't have access to it`,
+			);
 		}
 		const body = (await c.req.json().catch(() => ({}))) as Record<
 			string,
