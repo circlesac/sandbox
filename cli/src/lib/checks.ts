@@ -1,10 +1,10 @@
 import { commandExists, exec } from "./exec.ts";
 
 export function isDockerInstalled() {
-  return commandExists("docker");
+	return commandExists("docker");
 }
 
 export function isDockerRunning() {
-  const { exitCode } = exec("docker info");
-  return exitCode === 0;
+	const { exitCode } = exec("docker info");
+	return exitCode === 0;
 }

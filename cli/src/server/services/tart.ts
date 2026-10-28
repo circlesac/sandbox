@@ -6,407 +6,432 @@ import type { SandboxInfo } from "../types.ts";
 import type { ContainerBackend, CreateContainerOpts } from "./backend.ts";
 
 interface TartInstance {
-  sandboxId: string;
-  vmName: string;
-  hostPort: number;
-  accessToken: string;
-  templateId: string;
-  createdAt: string;
-  timeoutSec: number;
-  metadata?: Record<string, string>;
-  proxy?: ReturnType<typeof createServer>;
+	sandboxId: string;
+	vmName: string;
+	hostPort: number;
+	accessToken: string;
+	templateId: string;
+	createdAt: string;
+	timeoutSec: number;
+	metadata?: Record<string, string>;
+	proxy?: ReturnType<typeof createServer>;
 }
 
 interface TartVm {
-  name: string;
-  state: string;
-  // tart list --format json provides more fields but we only need these
+	name: string;
+	state: string;
+	// tart list --format json provides more fields but we only need these
 }
 
 function tartExec(args: string[], timeoutMs = 10_000): string {
-  return execSync(`tart ${args.join(" ")}`, {
-    encoding: "utf-8",
-    timeout: timeoutMs,
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
+	return execSync(`tart ${args.join(" ")}`, {
+		encoding: "utf-8",
+		timeout: timeoutMs,
+		stdio: ["ignore", "pipe", "pipe"],
+	}).trim();
 }
 
 function tartList(): TartVm[] {
-  try {
-    const output = tartExec(["list", "--format", "json"]);
-    if (!output) return [];
-    const parsed = JSON.parse(output);
-    // tart list --format json returns an array of objects with Source, Name, Size, State, etc.
-    if (Array.isArray(parsed)) {
-      return parsed.map((vm: Record<string, string>) => ({
-        name: vm.Name ?? vm.name ?? "",
-        state: (vm.State ?? vm.state ?? "").toLowerCase(),
-      }));
-    }
-    return [];
-  } catch {
-    return [];
-  }
+	try {
+		const output = tartExec(["list", "--format", "json"]);
+		if (!output) return [];
+		const parsed = JSON.parse(output);
+		// tart list --format json returns an array of objects with Source, Name, Size, State, etc.
+		if (Array.isArray(parsed)) {
+			return parsed.map((vm: Record<string, string>) => ({
+				name: vm.Name ?? vm.name ?? "",
+				state: (vm.State ?? vm.state ?? "").toLowerCase(),
+			}));
+		}
+		return [];
+	} catch {
+		return [];
+	}
 }
 
 function tartIp(vmName: string, waitSec = 30): string {
-  return tartExec(["ip", "--wait", String(waitSec), vmName], (waitSec + 10) * 1000);
+	return tartExec(
+		["ip", "--wait", String(waitSec), vmName],
+		(waitSec + 10) * 1000,
+	);
 }
 
 function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.listen(0, () => {
-      const addr = srv.address();
-      if (!addr || typeof addr === "string") {
-        srv.close();
-        return reject(new Error("Failed to get port"));
-      }
-      const { port } = addr;
-      srv.close(() => resolve(port));
-    });
-    srv.on("error", reject);
-  });
+	return new Promise((resolve, reject) => {
+		const srv = createServer();
+		srv.listen(0, () => {
+			const addr = srv.address();
+			if (!addr || typeof addr === "string") {
+				srv.close();
+				return reject(new Error("Failed to get port"));
+			}
+			const { port } = addr;
+			srv.close(() => resolve(port));
+		});
+		srv.on("error", reject);
+	});
 }
 
 /** Create a TCP proxy forwarding localhost:localPort → vmIp:remotePort */
 function createTcpProxy(
-  localPort: number,
-  remoteHost: string,
-  remotePort: number,
+	localPort: number,
+	remoteHost: string,
+	remotePort: number,
 ): ReturnType<typeof createServer> {
-  const server = createServer((clientSocket: Socket) => {
-    const upstream = connect(remotePort, remoteHost);
-    clientSocket.pipe(upstream);
-    upstream.pipe(clientSocket);
-    clientSocket.on("error", () => upstream.destroy());
-    upstream.on("error", () => clientSocket.destroy());
-    clientSocket.on("close", () => upstream.destroy());
-    upstream.on("close", () => clientSocket.destroy());
-  });
-  server.listen(localPort);
-  return server;
+	const server = createServer((clientSocket: Socket) => {
+		const upstream = connect(remotePort, remoteHost);
+		clientSocket.pipe(upstream);
+		upstream.pipe(clientSocket);
+		clientSocket.on("error", () => upstream.destroy());
+		upstream.on("error", () => clientSocket.destroy());
+		clientSocket.on("close", () => upstream.destroy());
+		upstream.on("close", () => clientSocket.destroy());
+	});
+	server.listen(localPort);
+	return server;
 }
 
 export class TartBackend implements ContainerBackend {
-  readonly type = "tart" as const;
-  readonly supportsPause = true;
-  private instances = new Map<string, TartInstance>();
+	readonly type = "tart" as const;
+	readonly supportsPause = true;
+	private instances = new Map<string, TartInstance>();
 
-  static isAvailable(): boolean {
-    try {
-      execSync("tart --version", { stdio: "ignore", timeout: 5_000 });
-      return true;
-    } catch {
-      return false;
-    }
-  }
+	static isAvailable(): boolean {
+		try {
+			execSync("tart --version", { stdio: "ignore", timeout: 5_000 });
+			return true;
+		} catch {
+			return false;
+		}
+	}
 
-  private vmIsSuspended(vmName: string): boolean {
-    const vms = tartList();
-    const vm = vms.find((v) => v.name === vmName);
-    return vm?.state === "suspended";
-  }
+	private vmIsSuspended(vmName: string): boolean {
+		const vms = tartList();
+		const vm = vms.find((v) => v.name === vmName);
+		return vm?.state === "suspended";
+	}
 
-  async resolveImage(templateId: string): Promise<string> {
-    const imageName =
-      templateId === "base" ? "sandbox-base" : `sandbox-${templateId}`;
+	async resolveImage(templateId: string): Promise<string> {
+		const imageName =
+			templateId === "base" ? "sandbox-base" : `sandbox-${templateId}`;
 
-    const vms = tartList();
-    if (vms.some((vm) => vm.name === imageName)) {
-      return imageName;
-    }
+		const vms = tartList();
+		if (vms.some((vm) => vm.name === imageName)) {
+			return imageName;
+		}
 
-    throw new Error(
-      `Template "${templateId}" not found. No tart VM "${imageName}" exists.\n` +
-        `Create one with: tart clone <source> ${imageName}`,
-    );
-  }
+		throw new Error(
+			`Template "${templateId}" not found. No tart VM "${imageName}" exists.\n` +
+				`Create one with: tart clone <source> ${imageName}`,
+		);
+	}
 
-  async createContainer(
-    opts: CreateContainerOpts,
-  ): Promise<{ instanceId: string; hostPort: number }> {
-    const image = await this.resolveImage(opts.templateId);
-    const vmName = `sandbox-${opts.sandboxId}`;
+	async createContainer(
+		opts: CreateContainerOpts,
+	): Promise<{ instanceId: string; hostPort: number }> {
+		const image = await this.resolveImage(opts.templateId);
+		const vmName = `sandbox-${opts.sandboxId}`;
 
-    // Clone the template VM (APFS COW — instant, ~0.1s)
-    tartExec(["clone", image, vmName], 120_000);
+		// Clone the template VM (APFS COW — instant, ~0.1s)
+		tartExec(["clone", image, vmName], 120_000);
 
-    // Register instance immediately to prevent orphan cleanup from deleting it
-    const instance: TartInstance = {
-      sandboxId: opts.sandboxId,
-      vmName,
-      hostPort: 0,
-      accessToken: opts.accessToken,
-      templateId: opts.templateId,
-      createdAt: new Date().toISOString(),
-      timeoutSec: opts.timeoutSec,
-      metadata: opts.metadata,
-    };
-    this.instances.set(opts.sandboxId, instance);
+		// Register instance immediately to prevent orphan cleanup from deleting it
+		const instance: TartInstance = {
+			sandboxId: opts.sandboxId,
+			vmName,
+			hostPort: 0,
+			accessToken: opts.accessToken,
+			templateId: opts.templateId,
+			createdAt: new Date().toISOString(),
+			timeoutSec: opts.timeoutSec,
+			metadata: opts.metadata,
+		};
+		this.instances.set(opts.sandboxId, instance);
 
-    // Check if the cloned VM has a suspended state (for fast resume)
-    const isSuspended = this.vmIsSuspended(vmName);
+		// Check if the cloned VM has a suspended state (for fast resume)
+		const isSuspended = this.vmIsSuspended(vmName);
 
-    // Start the VM in the background (resume if suspended, cold boot otherwise)
-    Bun.spawn(["tart", "run", vmName, "--no-graphics", "--suspendable"], {
-      stdio: ["ignore", "ignore", "ignore"],
-    });
+		// Start the VM in the background (resume if suspended, cold boot otherwise)
+		Bun.spawn(["tart", "run", vmName, "--no-graphics", "--suspendable"], {
+			stdio: ["ignore", "ignore", "ignore"],
+		});
 
-    if (!isSuspended) {
-      // Cold boot: wait 10s before polling for IP
-      await new Promise((r) => setTimeout(r, 10_000));
-    } else {
-      // Suspended resume: IP available almost instantly, short delay for VM state restore
-      await new Promise((r) => setTimeout(r, 1_000));
-    }
+		if (!isSuspended) {
+			// Cold boot: wait 10s before polling for IP
+			await new Promise((r) => setTimeout(r, 10_000));
+		} else {
+			// Suspended resume: IP available almost instantly, short delay for VM state restore
+			await new Promise((r) => setTimeout(r, 1_000));
+		}
 
-    let vmIp: string | undefined;
-    const maxRetries = isSuspended ? 2 : 6;
-    const ipWaitSec = isSuspended ? 3 : 30;
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        vmIp = tartIp(vmName, ipWaitSec);
-        if (vmIp) break;
-      } catch {
-        // VM not ready yet, retry
-      }
-    }
+		let vmIp: string | undefined;
+		const maxRetries = isSuspended ? 2 : 6;
+		const ipWaitSec = isSuspended ? 3 : 30;
+		for (let i = 0; i < maxRetries; i++) {
+			try {
+				vmIp = tartIp(vmName, ipWaitSec);
+				if (vmIp) break;
+			} catch {
+				// VM not ready yet, retry
+			}
+		}
 
-    if (!vmIp) {
-      // Cleanup on failure
-      this.instances.delete(opts.sandboxId);
-      try {
-        tartExec(["stop", vmName]);
-      } catch {}
-      try {
-        tartExec(["delete", vmName]);
-      } catch {}
-      throw new Error(
-        `Tart VM "${vmName}" failed to obtain an IP address within 190s`,
-      );
-    }
+		if (!vmIp) {
+			// Cleanup on failure
+			this.instances.delete(opts.sandboxId);
+			try {
+				tartExec(["stop", vmName]);
+			} catch {}
+			try {
+				tartExec(["delete", vmName]);
+			} catch {}
+			throw new Error(
+				`Tart VM "${vmName}" failed to obtain an IP address within 190s`,
+			);
+		}
 
-    // Wait for envd-lite to become healthy (pre-installed in base image via LaunchAgent)
-    let envdReady = false;
-    const envdMaxRetries = isSuspended ? 30 : 60;
-    const envdPollMs = isSuspended ? 200 : 2000;
-    for (let i = 0; i < envdMaxRetries; i++) {
-      try {
-        const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
-        if (res.status === 204) {
-          envdReady = true;
-          break;
-        }
-      } catch {
-        // not ready yet
-      }
-      await new Promise((r) => setTimeout(r, envdPollMs));
-    }
+		// Wait for envd-lite to become healthy (pre-installed in base image via LaunchAgent)
+		let envdReady = false;
+		const envdMaxRetries = isSuspended ? 30 : 60;
+		const envdPollMs = isSuspended ? 200 : 2000;
+		for (let i = 0; i < envdMaxRetries; i++) {
+			try {
+				const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
+				if (res.status === 204) {
+					envdReady = true;
+					break;
+				}
+			} catch {
+				// not ready yet
+			}
+			await new Promise((r) => setTimeout(r, envdPollMs));
+		}
 
-    if (!envdReady) {
-      this.instances.delete(opts.sandboxId);
-      try { tartExec(["stop", vmName]); } catch {}
-      try { tartExec(["delete", vmName]); } catch {}
-      throw new Error(
-        `envd-lite in VM "${vmName}" did not become healthy within 120s. ` +
-        `Ensure envd-lite is pre-installed in the base image.`,
-      );
-    }
+		if (!envdReady) {
+			this.instances.delete(opts.sandboxId);
+			try {
+				tartExec(["stop", vmName]);
+			} catch {}
+			try {
+				tartExec(["delete", vmName]);
+			} catch {}
+			throw new Error(
+				`envd-lite in VM "${vmName}" did not become healthy within 120s. ` +
+					`Ensure envd-lite is pre-installed in the base image.`,
+			);
+		}
 
-    // Set up a local TCP proxy forwarding to the VM's envd port
-    const hostPort = await findFreePort();
-    const proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
+		// Set up a local TCP proxy forwarding to the VM's envd port
+		const hostPort = await findFreePort();
+		const proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
 
-    // Update instance with runtime info (was registered early to prevent orphan cleanup)
-    instance.hostPort = hostPort;
-    instance.proxy = proxy;
+		// Update instance with runtime info (was registered early to prevent orphan cleanup)
+		instance.hostPort = hostPort;
+		instance.proxy = proxy;
 
-    return { instanceId: vmName, hostPort };
-  }
+		return { instanceId: vmName, hostPort };
+	}
 
-  async startContainer(sandboxId: string): Promise<{ hostPort: number }> {
-    const instance = this.instances.get(sandboxId);
-    if (!instance) {
-      throw new Error(`Sandbox "${sandboxId}" not found`);
-    }
+	async startContainer(sandboxId: string): Promise<{ hostPort: number }> {
+		const instance = this.instances.get(sandboxId);
+		if (!instance) {
+			throw new Error(`Sandbox "${sandboxId}" not found`);
+		}
 
-    const vms = tartList();
-    const vm = vms.find((v) => v.name === instance.vmName);
-    const wasRunning = vm?.state === "running";
+		const vms = tartList();
+		const vm = vms.find((v) => v.name === instance.vmName);
+		const wasRunning = vm?.state === "running";
 
-    if (!wasRunning) {
-      // Resume stopped/suspended VM
-      Bun.spawn(["tart", "run", instance.vmName, "--no-graphics", "--suspendable"], {
-        stdio: ["ignore", "ignore", "ignore"],
-      });
-    }
+		if (!wasRunning) {
+			// Resume stopped/suspended VM
+			Bun.spawn(
+				["tart", "run", instance.vmName, "--no-graphics", "--suspendable"],
+				{
+					stdio: ["ignore", "ignore", "ignore"],
+				},
+			);
+		}
 
-    // Get IP (may have changed after resume). Resume from suspended is fast,
-    // so use short waits — fail fast if anything is wrong.
-    let vmIp: string | undefined;
-    for (let i = 0; i < 2; i++) {
-      try {
-        vmIp = tartIp(instance.vmName, 3);
-        if (vmIp) break;
-      } catch {}
-    }
+		// Get IP (may have changed after resume). Resume from suspended is fast,
+		// so use short waits — fail fast if anything is wrong.
+		let vmIp: string | undefined;
+		for (let i = 0; i < 2; i++) {
+			try {
+				vmIp = tartIp(instance.vmName, 3);
+				if (vmIp) break;
+			} catch {}
+		}
 
-    if (!vmIp) {
-      throw new Error(`VM "${instance.vmName}" failed to get IP on resume`);
-    }
+		if (!vmIp) {
+			throw new Error(`VM "${instance.vmName}" failed to get IP on resume`);
+		}
 
-    // Wait for envd-lite to become healthy (suspended resume is near-instant)
-    for (let i = 0; i < 30; i++) {
-      try {
-        const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
-        if (res.status === 204) break;
-      } catch {
-        // not ready yet
-      }
-      await new Promise((r) => setTimeout(r, 200));
-    }
+		// Wait for envd-lite to become healthy (suspended resume is near-instant)
+		for (let i = 0; i < 30; i++) {
+			try {
+				const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
+				if (res.status === 204) break;
+			} catch {
+				// not ready yet
+			}
+			await new Promise((r) => setTimeout(r, 200));
+		}
 
-    // Recreate TCP proxy (previous one was closed on pause)
-    instance.proxy?.close();
-    const hostPort = await findFreePort();
-    instance.proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
-    instance.hostPort = hostPort;
+		// Recreate TCP proxy (previous one was closed on pause)
+		instance.proxy?.close();
+		const hostPort = await findFreePort();
+		instance.proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
+		instance.hostPort = hostPort;
 
-    return { hostPort };
-  }
+		return { hostPort };
+	}
 
-  refreshTimeout(sandboxId: string, timeoutSec: number): void {
-    const instance = this.instances.get(sandboxId);
-    if (!instance) return;
-    instance.createdAt = new Date().toISOString();
-    instance.timeoutSec = timeoutSec;
-  }
+	refreshTimeout(sandboxId: string, timeoutSec: number): void {
+		const instance = this.instances.get(sandboxId);
+		if (!instance) return;
+		instance.createdAt = new Date().toISOString();
+		instance.timeoutSec = timeoutSec;
+	}
 
-  async stopContainer(sandboxId: string): Promise<boolean> {
-    const instance = this.instances.get(sandboxId);
-    if (!instance) return false;
+	async stopContainer(sandboxId: string): Promise<boolean> {
+		const instance = this.instances.get(sandboxId);
+		if (!instance) return false;
 
-    instance.proxy?.close();
-    instance.proxy = undefined;
+		instance.proxy?.close();
+		instance.proxy = undefined;
 
-    try {
-      tartExec(["suspend", instance.vmName], 60_000);
-    } catch {
-      // fallback to stop if suspend fails
-      try { tartExec(["stop", instance.vmName]); } catch {}
-    }
+		try {
+			tartExec(["suspend", instance.vmName], 60_000);
+		} catch {
+			// fallback to stop if suspend fails
+			try {
+				tartExec(["stop", instance.vmName]);
+			} catch {}
+		}
 
-    return true;
-  }
+		return true;
+	}
 
-  async removeContainer(sandboxId: string): Promise<boolean> {
-    const instance = this.instances.get(sandboxId);
-    if (!instance) return false;
+	async removeContainer(sandboxId: string): Promise<boolean> {
+		const instance = this.instances.get(sandboxId);
+		if (!instance) return false;
 
-    instance.proxy?.close();
-    instance.proxy = undefined;
+		instance.proxy?.close();
+		instance.proxy = undefined;
 
-    try {
-      tartExec(["stop", instance.vmName]);
-    } catch {}
+		try {
+			tartExec(["stop", instance.vmName]);
+		} catch {}
 
-    try {
-      tartExec(["delete", instance.vmName]);
-    } catch {}
+		try {
+			tartExec(["delete", instance.vmName]);
+		} catch {}
 
-    this.instances.delete(sandboxId);
-    return true;
-  }
+		this.instances.delete(sandboxId);
+		return true;
+	}
 
-  async inspectSandbox(sandboxId: string): Promise<SandboxInfo | null> {
-    const instance = this.instances.get(sandboxId);
-    if (!instance) return null;
+	async inspectSandbox(sandboxId: string): Promise<SandboxInfo | null> {
+		const instance = this.instances.get(sandboxId);
+		if (!instance) return null;
 
-    const vms = tartList();
-    const vm = vms.find((v) => v.name === instance.vmName);
+		const vms = tartList();
+		const vm = vms.find((v) => v.name === instance.vmName);
 
-    if (!vm) {
-      this.instances.delete(sandboxId);
-      return null;
-    }
+		if (!vm) {
+			this.instances.delete(sandboxId);
+			return null;
+		}
 
-    const state: "running" | "paused" =
-      vm.state === "running" ? "running" : "paused";
+		const state: "running" | "paused" =
+			vm.state === "running" ? "running" : "paused";
 
-    return {
-      sandboxId: instance.sandboxId,
-      instanceId: instance.vmName,
-      accessToken: instance.accessToken,
-      templateId: instance.templateId,
-      createdAt: instance.createdAt,
-      timeoutSec: instance.timeoutSec,
-      hostPort: instance.hostPort,
-      state,
-      metadata: instance.metadata,
-    };
-  }
+		return {
+			sandboxId: instance.sandboxId,
+			instanceId: instance.vmName,
+			accessToken: instance.accessToken,
+			templateId: instance.templateId,
+			createdAt: instance.createdAt,
+			timeoutSec: instance.timeoutSec,
+			hostPort: instance.hostPort,
+			state,
+			metadata: instance.metadata,
+		};
+	}
 
-  async listSandboxes(
-    filters?: { state?: "running" | "paused" },
-  ): Promise<SandboxInfo[]> {
-    const vms = tartList();
-    const vmMap = new Map(vms.map((vm) => [vm.name, vm]));
-    const results: SandboxInfo[] = [];
-    const dead: string[] = [];
+	async listSandboxes(filters?: {
+		state?: "running" | "paused";
+	}): Promise<SandboxInfo[]> {
+		const vms = tartList();
+		const vmMap = new Map(vms.map((vm) => [vm.name, vm]));
+		const results: SandboxInfo[] = [];
+		const dead: string[] = [];
 
-    for (const [id, instance] of this.instances) {
-      const vm = vmMap.get(instance.vmName);
-      if (!vm) {
-        dead.push(id);
-        continue;
-      }
+		for (const [id, instance] of this.instances) {
+			const vm = vmMap.get(instance.vmName);
+			if (!vm) {
+				dead.push(id);
+				continue;
+			}
 
-      // VM shut itself down (runner finished) → clean up
-      if (vm.state === "stopped") {
-        console.log(`VM "${instance.vmName}" stopped (runner finished), cleaning up`);
-        try { tartExec(["delete", instance.vmName]); } catch {}
-        instance.proxy?.close();
-        dead.push(id);
-        continue;
-      }
+			// VM shut itself down (runner finished) → clean up
+			if (vm.state === "stopped") {
+				console.log(
+					`VM "${instance.vmName}" stopped (runner finished), cleaning up`,
+				);
+				try {
+					tartExec(["delete", instance.vmName]);
+				} catch {}
+				instance.proxy?.close();
+				dead.push(id);
+				continue;
+			}
 
-      const state: "running" | "paused" =
-        vm.state === "running" ? "running" : "paused";
+			const state: "running" | "paused" =
+				vm.state === "running" ? "running" : "paused";
 
-      if (filters?.state && filters.state !== state) continue;
+			if (filters?.state && filters.state !== state) continue;
 
-      results.push({
-        sandboxId: instance.sandboxId,
-        instanceId: instance.vmName,
-        accessToken: instance.accessToken,
-        templateId: instance.templateId,
-        createdAt: instance.createdAt,
-        timeoutSec: instance.timeoutSec,
-        hostPort: instance.hostPort,
-        state,
-        metadata: instance.metadata,
-      });
-    }
+			results.push({
+				sandboxId: instance.sandboxId,
+				instanceId: instance.vmName,
+				accessToken: instance.accessToken,
+				templateId: instance.templateId,
+				createdAt: instance.createdAt,
+				timeoutSec: instance.timeoutSec,
+				hostPort: instance.hostPort,
+				state,
+				metadata: instance.metadata,
+			});
+		}
 
-    for (const id of dead) {
-      this.instances.delete(id);
-    }
+		for (const id of dead) {
+			this.instances.delete(id);
+		}
 
-    // Clean orphaned VMs not in instance map (e.g. from previous process)
-    for (const vm of vms) {
-      if (vm.name.startsWith("sandbox-sbx-") && !this.instances.has(vm.name.replace("sandbox-", ""))) {
-        if (vm.state === "stopped" || vm.state === "suspended") {
-          console.log(`Orphaned VM "${vm.name}" (${vm.state}), deleting`);
-          try { tartExec(["delete", vm.name]); } catch {}
-        } else if (vm.state === "running") {
-          console.log(`Orphaned VM "${vm.name}" running, stopping + deleting`);
-          try { tartExec(["stop", vm.name]); } catch {}
-          try { tartExec(["delete", vm.name]); } catch {}
-        }
-      }
-    }
+		// Clean orphaned VMs not in instance map (e.g. from previous process)
+		for (const vm of vms) {
+			if (
+				vm.name.startsWith("sandbox-sbx-") &&
+				!this.instances.has(vm.name.replace("sandbox-", ""))
+			) {
+				if (vm.state === "stopped" || vm.state === "suspended") {
+					console.log(`Orphaned VM "${vm.name}" (${vm.state}), deleting`);
+					try {
+						tartExec(["delete", vm.name]);
+					} catch {}
+				} else if (vm.state === "running") {
+					console.log(`Orphaned VM "${vm.name}" running, stopping + deleting`);
+					try {
+						tartExec(["stop", vm.name]);
+					} catch {}
+					try {
+						tartExec(["delete", vm.name]);
+					} catch {}
+				}
+			}
+		}
 
-    return results;
-  }
+		return results;
+	}
 }
