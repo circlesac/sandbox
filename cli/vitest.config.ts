@@ -10,5 +10,8 @@ export default defineConfig({
 		exclude: ["node_modules", "dist"],
 		globals: true,
 		globalSetup: ["./test/global-setup.ts"],
+		coverage: {
+			include: ["src/**"],
+		},
 	},
 });

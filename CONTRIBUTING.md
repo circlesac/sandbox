@@ -7,9 +7,19 @@ cd cli
 bun install
 bun run dev serve        # run server in dev mode
 bun run test             # format check, lint, type check, unit + integration tests
-bun run test:sdk-matrix  # E2B smoke suite on the lowest supported and the latest SDK
+bun run test:local       # unit tests, every provider set up on this machine, SDK matrix
+bun run test:unit        # unit tests only
+bun run test:docker      # E2B smoke suite on the Docker backend
+bun run test:tart        # E2B smoke suite on Tart macOS VMs
+bun run test:shuru       # E2B smoke suite on Shuru microVMs
+bun run test:sdk-matrix  # Docker smoke suite on the lowest supported and the latest SDK
+bun run test:coverage    # all tests with a coverage report for src/
 bun run format           # apply formatting
 ```
+
+`test:docker`, `test:tart`, and `test:shuru` fail with the missing prerequisite when the provider is not set up, instead of skipping. `test:local` runs what this machine can and lists the providers it could not run and why.
+
+`test:coverage` counts only code that runs inside the vitest process. The integration suites drive a server started as a separate process, so the routes, proxy, and envd client they exercise appear uncovered there.
 
 The Docker integration tests need a running Docker daemon and a local `sandbox-base:latest` image. Build it with `docker build -t sandbox-base:latest docker/sandbox`, or pull `ghcr.io/circlesac/sandbox-base:latest` and tag it as `sandbox-base:latest`. Without a local tag, every sandbox creation pulls from GHCR, which can outlast the SDK's 60-second request timeout. Locally the suite is skipped when Docker is unavailable; in CI that is a failure.
 

@@ -1,10 +1,11 @@
 import { createServer } from "node:net";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { Sandbox } from "e2b";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { providers } from "./providers.ts";
 
-const TEST_API_KEY = "sk-test-tart-integration";
+const TEST_API_KEY = "e2b_0000000000000000000000000000000000000000";
 
 function findFreePort(): Promise<number> {
 	return new Promise((resolve, reject) => {
@@ -35,32 +36,7 @@ async function waitForHealth(port: number, timeoutMs = 30_000) {
 	);
 }
 
-function isTartAvailable(): boolean {
-	const result = spawnSync("tart", ["--version"], { stdio: "ignore" });
-	return result.status === 0;
-}
-
-function hasSandboxBaseVM(): boolean {
-	const result = spawnSync("tart", ["list", "--format", "json"], {
-		encoding: "utf-8",
-		stdio: "pipe",
-	});
-	if (result.status !== 0) return false;
-	try {
-		const vms = JSON.parse(result.stdout ?? "[]");
-		return (
-			Array.isArray(vms) &&
-			vms.some(
-				(vm: { Name?: string; name?: string }) =>
-					(vm.Name ?? vm.name) === "sandbox-base",
-			)
-		);
-	} catch {
-		return false;
-	}
-}
-
-const skip = !isTartAvailable() || !hasSandboxBaseVM();
+const skip = providers.tart.missing() !== null;
 
 describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 	let serverProcess: ChildProcess | undefined;

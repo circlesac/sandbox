@@ -17,7 +17,13 @@
 		"postinstall": "node bin/install.js",
 		"test": "bun run format:check && bun run lint && bun run typecheck && vitest run",
 		"test:watch": "vitest",
+		"test:unit": "vitest run test/unit",
+		"test:docker": "bun run scripts/test-providers.ts docker",
+		"test:tart": "bun run scripts/test-providers.ts tart",
+		"test:shuru": "bun run scripts/test-providers.ts shuru",
 		"test:sdk-matrix": "bun run scripts/sdk-matrix.ts",
+		"test:local": "bun run scripts/test-providers.ts local",
+		"test:coverage": "vitest run --coverage",
 		"typecheck": "tsc --noEmit",
 		"format": "biome format --write .",
 		"format:check": "biome format .",
@@ -35,8 +41,9 @@
 		"@biomejs/biome": "^2.6.3",
 		"@types/bun": "latest",
 		"@types/dockerode": "^4.0.1",
+		"@vitest/coverage-v8": "^4.1.12",
 		"e2b": "^2.31.0",
 		"typescript": "^5",
-		"vitest": "^4.0.18"
+		"vitest": "^4.1.12"
 	}
 }

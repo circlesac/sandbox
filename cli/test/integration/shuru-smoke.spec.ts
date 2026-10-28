@@ -1,10 +1,11 @@
 import { createServer } from "node:net";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { Sandbox } from "e2b";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { providers } from "./providers.ts";
 
-const TEST_API_KEY = "sk-test-shuru-integration";
+const TEST_API_KEY = "e2b_0000000000000000000000000000000000000000";
 
 function findFreePort(): Promise<number> {
 	return new Promise((resolve, reject) => {
@@ -35,20 +36,7 @@ async function waitForHealth(port: number, timeoutMs = 30_000) {
 	);
 }
 
-function isShuruAvailable(): boolean {
-	const result = spawnSync("shuru", ["--version"], { stdio: "ignore" });
-	return result.status === 0;
-}
-
-function hasCheckpoint(): boolean {
-	const result = spawnSync("shuru", ["checkpoint", "list"], {
-		encoding: "utf-8",
-		stdio: "pipe",
-	});
-	return result.status === 0 && (result.stdout ?? "").includes("sandbox-base");
-}
-
-const skip = !isShuruAvailable() || !hasCheckpoint();
+const skip = providers.shuru.missing() !== null;
 
 describe.skipIf(skip)("Shuru E2B Smoke", { timeout: 180_000 }, () => {
 	let serverProcess: ChildProcess | undefined;
