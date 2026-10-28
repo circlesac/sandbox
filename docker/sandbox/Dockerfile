@@ -26,6 +26,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
 RUN useradd -m -s /bin/bash -G sudo user \
     && echo 'user ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
+# envd runs as root and reopens files the default user owns. With
+# fs.protected_regular enabled on the host (the Ubuntu default), the kernel
+# refuses that in sticky world-writable directories, so the second write to a
+# /tmp file fails with "permission denied". The sysctl is host-wide, so drop
+# the sticky bit in the image instead.
+RUN chmod 0777 /tmp /var/tmp
+
 WORKDIR /home/user
 
 EXPOSE 49983

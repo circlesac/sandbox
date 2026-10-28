@@ -15,7 +15,7 @@ The Docker integration tests need a running Docker daemon and a local `sandbox-b
 
 `test:sdk-matrix` installs each E2B SDK version into a temporary directory and runs `test/integration/e2b-smoke.spec.ts` with the `e2b` import pointed at it. The lowest supported version is the floor of the `e2b` range in `cli/package.json`. Pass versions as arguments to test others, for example `bun run test:sdk-matrix 2.40.0`.
 
-Pull requests run the same `test` and `test:sdk-matrix` scripts in `.github/workflows/test.yml`.
+Pull requests run the same `test` and `test:sdk-matrix` scripts in `.github/workflows/test.yml`, against a base image built from the pull request.
 
 ### Tooling
 
