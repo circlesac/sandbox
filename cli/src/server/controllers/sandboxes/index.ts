@@ -1,4 +1,4 @@
-import { OpenAPIRoute } from "chanfana";
+import { type fromHono, OpenAPIRoute } from "chanfana";
 import type { Context } from "hono";
 import { z } from "zod";
 import {
@@ -340,4 +340,23 @@ export class SetSandboxTimeout extends OpenAPIRoute {
 			throw err;
 		}
 	}
+}
+
+/**
+ * Registers the sandbox API. E2B SDK 2.51 and later create and connect through
+ * the /v2 routes; earlier SDKs use the unversioned ones.
+ */
+export function registerSandboxRoutes(openapi: ReturnType<typeof fromHono>) {
+	openapi.get("/sandboxes", ListSandboxes);
+	openapi.post("/sandboxes", CreateSandbox);
+	openapi.get("/sandboxes/:sandboxID", GetSandbox);
+	openapi.delete("/sandboxes/:sandboxID", DeleteSandbox);
+	openapi.post("/sandboxes/:sandboxID/pause", PauseSandbox);
+	openapi.post("/sandboxes/:sandboxID/resume", ResumeSandbox);
+	openapi.post("/sandboxes/:sandboxID/connect", ConnectSandbox);
+	openapi.post("/sandboxes/:sandboxID/timeout", SetSandboxTimeout);
+
+	openapi.get("/v2/sandboxes", ListSandboxes);
+	openapi.post("/v2/sandboxes", CreateSandbox);
+	openapi.post("/v2/sandboxes/:sandboxID/connect", ConnectSandbox);
 }

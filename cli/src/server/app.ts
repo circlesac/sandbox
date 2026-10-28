@@ -11,14 +11,7 @@ import { resolveSandboxByToken } from "./services/proxy.ts";
 extendZodWithOpenApi(z);
 
 import {
-	ConnectSandbox,
-	CreateSandbox,
-	DeleteSandbox,
-	GetSandbox,
-	ListSandboxes,
-	PauseSandbox,
-	ResumeSandbox,
-	SetSandboxTimeout,
+	registerSandboxRoutes,
 	setSandboxService,
 } from "./controllers/sandboxes/index.ts";
 import {
@@ -104,18 +97,7 @@ export function createApp(opts?: {
 	app.use("/v2/sandboxes", authMiddleware);
 	app.use("/v2/sandboxes/*", authMiddleware);
 
-	// Register endpoints
-	openapi.get("/sandboxes", ListSandboxes);
-	openapi.post("/sandboxes", CreateSandbox);
-	openapi.get("/sandboxes/:sandboxID", GetSandbox);
-	openapi.delete("/sandboxes/:sandboxID", DeleteSandbox);
-	openapi.post("/sandboxes/:sandboxID/pause", PauseSandbox);
-	openapi.post("/sandboxes/:sandboxID/resume", ResumeSandbox);
-	openapi.post("/sandboxes/:sandboxID/connect", ConnectSandbox);
-	openapi.post("/sandboxes/:sandboxID/timeout", SetSandboxTimeout);
-
-	// E2B SDK v2 compat — SDK uses /v2/sandboxes for list
-	openapi.get("/v2/sandboxes", ListSandboxes);
+	registerSandboxRoutes(openapi);
 
 	return { app, backends, sandboxService, ttlService };
 }

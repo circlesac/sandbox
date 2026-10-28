@@ -10,13 +10,7 @@ import {
 extendZodWithOpenApi(z);
 
 import {
-	CreateSandbox,
-	DeleteSandbox,
-	GetSandbox,
-	ListSandboxes,
-	PauseSandbox,
-	ResumeSandbox,
-	SetSandboxTimeout,
+	registerSandboxRoutes,
 	setSandboxService,
 } from "../../../../src/server/controllers/sandboxes/index.ts";
 
@@ -65,14 +59,7 @@ describe("sandbox controllers", () => {
 		setSandboxService(service as unknown as SandboxService);
 
 		app = new Hono();
-		const openapi = fromHono(app);
-		openapi.get("/sandboxes", ListSandboxes);
-		openapi.post("/sandboxes", CreateSandbox);
-		openapi.get("/sandboxes/:sandboxID", GetSandbox);
-		openapi.delete("/sandboxes/:sandboxID", DeleteSandbox);
-		openapi.post("/sandboxes/:sandboxID/pause", PauseSandbox);
-		openapi.post("/sandboxes/:sandboxID/resume", ResumeSandbox);
-		openapi.post("/sandboxes/:sandboxID/timeout", SetSandboxTimeout);
+		registerSandboxRoutes(fromHono(app));
 	});
 
 	describe("GET /sandboxes", () => {
@@ -200,6 +187,61 @@ describe("sandbox controllers", () => {
 				body: JSON.stringify({ timeout: 600 }),
 			});
 			expect(res.status).toBe(204);
+		});
+	});
+
+	describe("POST /v2/sandboxes", () => {
+		it("creates a sandbox from the v2 body and returns 201", async () => {
+			const body = {
+				templateID: "base",
+				timeout: 300,
+				metadata: { platform: "linux" },
+				envVars: { FOO: "bar" },
+			};
+			const res = await app.request("/v2/sandboxes", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+			expect(res.status).toBe(201);
+			const json = (await res.json()) as Record<string, unknown>;
+			expect(json.sandboxID).toBe("sbx-test123");
+			expect(json.envdAccessToken).toBe("token-abc");
+			expect(service.create).toHaveBeenCalledWith(body);
+		});
+	});
+
+	describe("POST /v2/sandboxes/:sandboxID/connect", () => {
+		it("connects with the requested timeout", async () => {
+			const res = await app.request("/v2/sandboxes/sbx-test123/connect", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ timeout: 600 }),
+			});
+			expect([200, 201]).toContain(res.status);
+			const json = (await res.json()) as Record<string, unknown>;
+			expect(json.sandboxID).toBe("sbx-test123");
+			expect(service.connect).toHaveBeenCalledWith("sbx-test123", 600);
+		});
+
+		it("accepts an omitted body, which v2 makes optional", async () => {
+			const res = await app.request("/v2/sandboxes/sbx-test123/connect", {
+				method: "POST",
+			});
+			expect([200, 201]).toContain(res.status);
+			expect(service.connect).toHaveBeenCalledWith("sbx-test123", undefined);
+		});
+
+		it("returns 404 for an unknown sandbox", async () => {
+			vi.mocked(service.connect).mockRejectedValueOnce(
+				new NotFoundError("Sandbox sbx-missing not found"),
+			);
+			const res = await app.request("/v2/sandboxes/sbx-missing/connect", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ timeout: 60 }),
+			});
+			expect(res.status).toBe(404);
 		});
 	});
 });
