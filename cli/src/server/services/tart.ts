@@ -3,7 +3,13 @@ import { createServer, type Socket } from "node:net";
 import { connect } from "node:net";
 import { config } from "../config.ts";
 import type { SandboxInfo } from "../types.ts";
-import type { ContainerBackend, CreateContainerOpts } from "./backend.ts";
+import { UnsupportedError } from "../errors.ts";
+import type {
+	ContainerBackend,
+	CreateContainerOpts,
+	ProxyTarget,
+} from "./backend.ts";
+import type { SandboxLifecycle } from "./lifecycle.ts";
 
 interface TartInstance {
 	sandboxId: string;
@@ -14,6 +20,8 @@ interface TartInstance {
 	createdAt: string;
 	timeoutSec: number;
 	metadata?: Record<string, string>;
+	lifecycle: SandboxLifecycle;
+	vmIp?: string;
 	proxy?: ReturnType<typeof createServer>;
 }
 
@@ -94,6 +102,10 @@ function createTcpProxy(
 export class TartBackend implements ContainerBackend {
 	readonly type = "tart" as const;
 	readonly supportsPause = true;
+	// A stopped tart VM counts as finished and is deleted, so a pause always
+	// suspends and keeps memory.
+	readonly supportsFilesystemPause = false;
+	readonly envdChecksAccessToken = false;
 	private instances = new Map<string, TartInstance>();
 
 	static isAvailable(): boolean {
@@ -145,6 +157,7 @@ export class TartBackend implements ContainerBackend {
 			createdAt: new Date().toISOString(),
 			timeoutSec: opts.timeoutSec,
 			metadata: opts.metadata,
+			lifecycle: opts.lifecycle,
 		};
 		this.instances.set(opts.sandboxId, instance);
 
@@ -228,6 +241,7 @@ export class TartBackend implements ContainerBackend {
 		// Update instance with runtime info (was registered early to prevent orphan cleanup)
 		instance.hostPort = hostPort;
 		instance.proxy = proxy;
+		instance.vmIp = vmIp;
 
 		return { instanceId: vmName, hostPort };
 	}
@@ -282,8 +296,22 @@ export class TartBackend implements ContainerBackend {
 		const hostPort = await findFreePort();
 		instance.proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
 		instance.hostPort = hostPort;
+		instance.vmIp = vmIp;
 
 		return { hostPort };
+	}
+
+	/** envd goes through the local TCP proxy; other ports go to the VM's address. */
+	async resolveTarget(
+		sandboxId: string,
+		port: number,
+	): Promise<ProxyTarget | null> {
+		const instance = this.instances.get(sandboxId);
+		if (!instance?.vmIp || !instance.hostPort) return null;
+		if (port === config.envdPort) {
+			return { host: "localhost", port: instance.hostPort };
+		}
+		return { host: instance.vmIp, port };
 	}
 
 	refreshTimeout(sandboxId: string, timeoutSec: number): void {
@@ -293,9 +321,17 @@ export class TartBackend implements ContainerBackend {
 		instance.timeoutSec = timeoutSec;
 	}
 
-	async stopContainer(sandboxId: string): Promise<boolean> {
+	async stopContainer(
+		sandboxId: string,
+		opts: { keepMemory?: boolean } = {},
+	): Promise<boolean> {
 		const instance = this.instances.get(sandboxId);
 		if (!instance) return false;
+		if (opts.keepMemory === false) {
+			throw new UnsupportedError(
+				"The tart backend cannot pause without keeping memory",
+			);
+		}
 
 		instance.proxy?.close();
 		instance.proxy = undefined;
@@ -356,6 +392,7 @@ export class TartBackend implements ContainerBackend {
 			hostPort: instance.hostPort,
 			state,
 			metadata: instance.metadata,
+			lifecycle: instance.lifecycle,
 		};
 	}
 
@@ -402,6 +439,7 @@ export class TartBackend implements ContainerBackend {
 				hostPort: instance.hostPort,
 				state,
 				metadata: instance.metadata,
+				lifecycle: instance.lifecycle,
 			});
 		}
 

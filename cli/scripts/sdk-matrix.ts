@@ -1,4 +1,4 @@
-// Runs the E2B smoke suite against the lowest supported E2B SDK (the floor of
+// Runs the Docker integration suites against the lowest supported E2B SDK (the floor of
 // the devDependency range) and the latest release, or against the versions
 // given as arguments. Each version is installed into its own temporary
 // directory, so the lockfile is never rewritten.
@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { providers } from "../test/integration/providers.ts";
 
 const cliDir = join(import.meta.dir, "..");
 const pkg = JSON.parse(readFileSync(join(cliDir, "package.json"), "utf-8"));
@@ -48,7 +49,7 @@ for (const version of versions) {
 		console.log(`\n=== E2B SDK ${version} ===`);
 		const run = spawnSync(
 			"bunx",
-			["vitest", "run", "test/integration/e2b-smoke.spec.ts"],
+			["vitest", "run", ...providers.docker.specs],
 			{
 				cwd: cliDir,
 				stdio: "inherit",

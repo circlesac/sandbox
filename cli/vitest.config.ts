@@ -6,12 +6,26 @@ const sdkEntry = process.env.E2B_SDK_ENTRY;
 export default defineConfig({
 	resolve: sdkEntry ? { alias: { e2b: sdkEntry } } : undefined,
 	test: {
-		include: ["**/*.spec.ts"],
-		exclude: ["node_modules", "dist"],
 		globals: true,
-		globalSetup: ["./test/global-setup.ts"],
 		coverage: {
 			include: ["src/**"],
 		},
+		projects: [
+			{
+				extends: true,
+				test: { name: "unit", include: ["test/unit/**/*.spec.ts"] },
+			},
+			{
+				extends: true,
+				test: {
+					name: "integration",
+					include: ["test/integration/**/*.spec.ts"],
+					globalSetup: ["./test/global-setup.ts"],
+					// The suites share one server and one Docker daemon; running them
+					// one at a time keeps sandbox start-up within envd's health timeout.
+					fileParallelism: false,
+				},
+			},
+		],
 	},
 });

@@ -23,7 +23,7 @@ if (target && target in providers) {
 		console.error(`test:${target} cannot run: ${missing}`);
 		process.exit(1);
 	}
-	process.exit(run("bunx", ["vitest", "run", suite.spec]) ? 0 : 1);
+	process.exit(run("bunx", ["vitest", "run", ...suite.specs]) ? 0 : 1);
 }
 
 if (target !== "local") {
@@ -44,7 +44,7 @@ for (const [name, suite] of Object.entries(providers)) {
 		results.push({ name, outcome: `not available: ${missing}` });
 		continue;
 	}
-	record(name, run("bunx", ["vitest", "run", suite.spec]));
+	record(name, run("bunx", ["vitest", "run", ...suite.specs]));
 	if (name === "docker")
 		record("sdk-matrix", run("bun", ["run", "scripts/sdk-matrix.ts"]));
 }

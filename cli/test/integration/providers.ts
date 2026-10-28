@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 export type Provider = "docker" | "tart" | "shuru";
 
 export interface ProviderSuite {
-	spec: string;
+	/** The integration specs that exercise this provider. */
+	specs: string[];
 	/** Returns why the provider cannot run on this machine, or null when it can. */
 	missing(): string | null;
 }
@@ -30,12 +31,15 @@ function hasTartBaseVM(): boolean {
 
 export const providers: Record<Provider, ProviderSuite> = {
 	docker: {
-		spec: "test/integration/e2b-smoke.spec.ts",
+		specs: [
+			"test/integration/e2b-smoke.spec.ts",
+			"test/integration/e2b-lifecycle.spec.ts",
+		],
 		missing: () =>
 			succeeds("docker", ["info"]) ? null : "Docker daemon is not reachable",
 	},
 	tart: {
-		spec: "test/integration/tart-smoke.spec.ts",
+		specs: ["test/integration/tart-smoke.spec.ts"],
 		missing: () => {
 			if (!succeeds("tart", ["--version"])) return "tart CLI is not installed";
 			if (!hasTartBaseVM())
@@ -44,7 +48,7 @@ export const providers: Record<Provider, ProviderSuite> = {
 		},
 	},
 	shuru: {
-		spec: "test/integration/shuru-smoke.spec.ts",
+		specs: ["test/integration/shuru-smoke.spec.ts"],
 		missing: () => {
 			if (!succeeds("shuru", ["--version"]))
 				return "shuru CLI is not installed";

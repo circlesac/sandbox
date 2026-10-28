@@ -23,7 +23,12 @@ export function setSandboxService(service: SandboxService) {
 	sandboxService = service;
 }
 
-/** Maps service errors to E2B-style error bodies; anything else is rethrown as a 500. */
+/** The host the client used, so the SDK's getHost() builds URLs back to this server. */
+function requestContext(c: Context) {
+	return { domain: c.req.header("host") ?? null };
+}
+
+/** Maps service errors to E2B-style error bodies. */
 function errorResponse(c: Context, err: unknown) {
 	if (err instanceof NotFoundError) {
 		return c.json({ code: 404, error: "not_found", message: err.message }, 404);
@@ -42,7 +47,10 @@ function errorResponse(c: Context, err: unknown) {
 			503,
 		);
 	}
-	throw err;
+	// Anything else is a server-side failure; say what it was.
+	console.error(err);
+	const message = err instanceof Error ? err.message : String(err);
+	return c.json({ code: 500, error: "internal", message }, 500);
 }
 
 export class CreateSandbox extends OpenAPIRoute {
@@ -76,12 +84,12 @@ export class CreateSandbox extends OpenAPIRoute {
 
 		if (isAsync) {
 			// Return immediately with sandbox ID, boot in background
-			const partial = await sandboxService.createAsync(body);
+			const partial = await sandboxService.createAsync(body, requestContext(c));
 			return c.json(partial, 202);
 		}
 
 		try {
-			const result = await sandboxService.create(body);
+			const result = await sandboxService.create(body, requestContext(c));
 			// A client that gave up (for example on the SDK's request timeout)
 			// never learns this sandbox's ID, so nothing would ever kill it.
 			if (c.req.raw.signal.aborted) {
@@ -213,7 +221,9 @@ export class PauseSandbox extends OpenAPIRoute {
 	override async handle(c: Context) {
 		const id = c.req.param("sandboxID");
 		try {
-			const paused = await sandboxService.pause(id);
+			const body = await c.req.json().catch(() => ({}));
+			// E2B keeps memory unless the client asks for a filesystem-only pause.
+			const paused = await sandboxService.pause(id, body.memory !== false);
 			if (!paused)
 				return c.json(
 					{ error: "not_found", message: `Sandbox ${id} not found` },
@@ -266,7 +276,11 @@ export class ResumeSandbox extends OpenAPIRoute {
 		const id = c.req.param("sandboxID");
 		const body = await c.req.json().catch(() => ({}));
 		try {
-			const result = await sandboxService.connect(id, body.timeout);
+			const result = await sandboxService.connect(
+				id,
+				body.timeout,
+				requestContext(c),
+			);
 			return c.json(result, 200);
 		} catch (err) {
 			if (err instanceof NotFoundError)
@@ -326,7 +340,11 @@ export class ConnectSandbox extends OpenAPIRoute {
 		try {
 			const info = await sandboxService.getInfo(id);
 			const wasPaused = info?.startedAt && !info?.endAt ? false : true;
-			const result = await sandboxService.connect(id, body.timeout);
+			const result = await sandboxService.connect(
+				id,
+				body.timeout,
+				requestContext(c),
+			);
 			return c.json(result, wasPaused ? 201 : 200);
 		} catch (err) {
 			if (err instanceof NotFoundError)

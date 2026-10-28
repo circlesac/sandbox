@@ -11,7 +11,12 @@ import { dirname, join } from "node:path";
 import { config } from "../config.ts";
 import { NotFoundError, RetryableError } from "../errors.ts";
 import type { SandboxInfo, SandboxLabels } from "../types.ts";
-import type { ContainerBackend, CreateContainerOpts } from "./backend.ts";
+import type {
+	ContainerBackend,
+	CreateContainerOpts,
+	ProxyTarget,
+} from "./backend.ts";
+import { LEGACY_LIFECYCLE, type SandboxLifecycle } from "./lifecycle.ts";
 
 const REGISTRY = "ghcr.io/circlesac";
 
@@ -31,6 +36,8 @@ interface DockerTimeoutState {
 export class DockerService implements ContainerBackend {
 	readonly type = "docker" as const;
 	readonly supportsPause = true;
+	readonly supportsFilesystemPause = true;
+	readonly envdChecksAccessToken = true;
 	private docker: Docker;
 	private timeoutState = new Map<string, DockerTimeoutState>();
 	private timeoutStatePath: string | null;
@@ -150,6 +157,7 @@ export class DockerService implements ContainerBackend {
 			"e2b.template-id": opts.templateId,
 			"e2b.created-at": new Date().toISOString(),
 			"e2b.timeout": String(opts.timeoutSec),
+			"e2b.lifecycle": JSON.stringify(opts.lifecycle),
 		};
 		if (opts.metadata) {
 			labels["e2b.metadata"] = JSON.stringify(opts.metadata);
@@ -190,6 +198,8 @@ export class DockerService implements ContainerBackend {
 		try {
 			const container = this.docker.getContainer(sandboxId);
 			const info = await container.inspect();
+			// A container being removed is already gone for every caller.
+			if (isGone(info.State.Status)) return null;
 			return this.parseContainerInfo(info);
 		} catch (err: unknown) {
 			if (isDockerNotFound(err)) return null;
@@ -210,10 +220,23 @@ export class DockerService implements ContainerBackend {
 		return true;
 	}
 
-	async stopContainer(sandboxId: string): Promise<boolean> {
+	/**
+	 * Pauses a sandbox. Keeping memory freezes its processes (docker pause), as
+	 * an E2B pause does; otherwise the container stops and only its filesystem
+	 * survives.
+	 */
+	async stopContainer(
+		sandboxId: string,
+		opts: { keepMemory?: boolean } = {},
+	): Promise<boolean> {
+		const container = this.docker.getContainer(sandboxId);
 		try {
-			const container = this.docker.getContainer(sandboxId);
-			await container.stop();
+			if (opts.keepMemory) {
+				const info = await container.inspect();
+				if (info.State.Running && !info.State.Paused) await container.pause();
+			} else {
+				await container.stop();
+			}
 		} catch (err: unknown) {
 			if (isDockerNotFound(err)) {
 				this.clearTimeoutState(sandboxId);
@@ -228,10 +251,18 @@ export class DockerService implements ContainerBackend {
 
 	async startContainer(sandboxId: string): Promise<{ hostPort: number }> {
 		const container = this.docker.getContainer(sandboxId);
-		try {
-			await container.start();
-		} catch (err: unknown) {
-			if (!isDockerNotModified(err)) throw err;
+		const before = await container.inspect();
+		if (isGone(before.State.Status)) {
+			throw new NotFoundError(`Sandbox ${sandboxId} not found`);
+		}
+		if (before.State.Paused) {
+			await container.unpause();
+		} else if (!before.State.Running) {
+			try {
+				await container.start();
+			} catch (err: unknown) {
+				if (!isDockerNotModified(err)) throw err;
+			}
 		}
 
 		const info = await container.inspect();
@@ -243,6 +274,35 @@ export class DockerService implements ContainerBackend {
 		}
 
 		return { hostPort };
+	}
+
+	/**
+	 * envd is reached through its published host port. Any other port is reached
+	 * on the container's own address, which the host can route to on Linux and
+	 * on OrbStack (not on Docker Desktop for Mac).
+	 */
+	async resolveTarget(
+		sandboxId: string,
+		port: number,
+	): Promise<ProxyTarget | null> {
+		let info: Docker.ContainerInspectInfo;
+		try {
+			info = await this.docker.getContainer(sandboxId).inspect();
+		} catch (err: unknown) {
+			if (isDockerNotFound(err)) return null;
+			throw err;
+		}
+		if (!info.State.Running || info.State.Paused) return null;
+		if (port === config.envdPort) {
+			const hostPort = Number(
+				info.NetworkSettings.Ports[`${config.envdPort}/tcp`]?.[0]?.HostPort,
+			);
+			return hostPort ? { host: "localhost", port: hostPort } : null;
+		}
+		const address = Object.values(info.NetworkSettings.Networks ?? {}).find(
+			(n) => n?.IPAddress,
+		)?.IPAddress;
+		return address ? { host: address, port } : null;
 	}
 
 	refreshTimeout(sandboxId: string, timeoutSec: number): void {
@@ -266,6 +326,7 @@ export class DockerService implements ContainerBackend {
 		for (const c of containers) {
 			const sandboxId = c.Labels["e2b.sandbox-id"];
 			if (sandboxId) present.add(sandboxId);
+			if (isGone(c.State)) continue;
 
 			let sandbox: SandboxInfo | null;
 			try {
@@ -300,26 +361,29 @@ export class DockerService implements ContainerBackend {
 		const portBindings = info.NetworkSettings.Ports[`${config.envdPort}/tcp`];
 		const hostPort = Number(portBindings?.[0]?.HostPort) || 0;
 		const sandboxId = labels["e2b.sandbox-id"] ?? info.Name.replace(/^\//, "");
-		const timeout = info.State.Running
-			? this.timeoutState.get(sandboxId)
-			: undefined;
+		const timeout =
+			info.State.Running && !info.State.Paused
+				? this.timeoutState.get(sandboxId)
+				: undefined;
 
 		return {
 			sandboxId,
 			instanceId: info.Id,
 			accessToken: labels["e2b.access-token"] ?? "",
 			templateId: labels["e2b.template-id"] ?? "base",
-			createdAt: info.State.Running
-				? (timeout?.startedAt ?? info.State.StartedAt)
-				: (labels["e2b.created-at"] ?? info.Created),
+			createdAt:
+				info.State.Running && !info.State.Paused
+					? (timeout?.startedAt ?? info.State.StartedAt)
+					: (labels["e2b.created-at"] ?? info.Created),
 			timeoutSec:
 				timeout?.timeoutSec ??
 				Number(labels["e2b.timeout"] ?? config.defaultTimeoutSec),
 			hostPort,
-			state: info.State.Running ? "running" : "paused",
+			state: info.State.Running && !info.State.Paused ? "running" : "paused",
 			metadata: labels["e2b.metadata"]
 				? JSON.parse(labels["e2b.metadata"])
 				: undefined,
+			lifecycle: parseLifecycle(labels),
 		};
 	}
 
@@ -341,6 +405,7 @@ export class DockerService implements ContainerBackend {
 			metadata: labels["e2b.metadata"]
 				? JSON.parse(labels["e2b.metadata"])
 				: undefined,
+			lifecycle: parseLifecycle(labels),
 		};
 	}
 
@@ -406,4 +471,17 @@ function isDockerNotModified(err: unknown): boolean {
 		"statusCode" in err &&
 		(err as { statusCode: number }).statusCode === 304
 	);
+}
+
+function parseLifecycle(labels: SandboxLabels): SandboxLifecycle {
+	const raw = labels["e2b.lifecycle"];
+	if (!raw) return LEGACY_LIFECYCLE;
+	return {
+		...LEGACY_LIFECYCLE,
+		...(JSON.parse(raw) as Partial<SandboxLifecycle>),
+	};
+}
+
+function isGone(status: string | undefined): boolean {
+	return status === "removing" || status === "dead";
 }

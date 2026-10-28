@@ -40,6 +40,7 @@ export const SandboxDetailSchema = z.object({
 		.record(z.string(), z.string())
 		.optional()
 		.describe("Arbitrary metadata"),
+	state: z.enum(["running", "paused"]).describe("Sandbox state"),
 });
 
 export const ConnectBodySchema = z.object({

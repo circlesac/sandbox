@@ -5,7 +5,6 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { config } from "./config.ts";
 import { authMiddleware } from "./middleware/auth.ts";
-import { resolveSandboxByToken } from "./services/proxy.ts";
 
 // Extend Zod with OpenAPI support (must be done before importing controllers)
 extendZodWithOpenApi(z);
@@ -22,7 +21,12 @@ import {
 import { EnvdService } from "./services/envd.ts";
 import { SandboxService } from "./services/sandbox.ts";
 import { TtlService } from "./services/ttl.ts";
-import { handleProxyRequest } from "./services/proxy.ts";
+import {
+	handleProxyRequest,
+	parseSandboxHost,
+	resolveDebugSandbox,
+	resolveSandboxByToken,
+} from "./services/proxy.ts";
 
 export function createApp(opts?: {
 	backendType?: BackendType;
@@ -45,27 +49,39 @@ export function createApp(opts?: {
 	const ttlService = new TtlService();
 	const sandboxService = new SandboxService(backends, envdService, ttlService);
 	setSandboxService(sandboxService);
-	// Data plane routing: proxy envd requests to sandbox containers
+	// Data plane routing: proxy requests for sandbox ports to the sandboxes
 	app.use("*", async (c, next) => {
-		const host = c.req.header("host") ?? "";
-
 		// Route by Host header: {port}-{sandboxId}.{domain}
-		if (/^\d+-sbx-/.test(host)) {
-			return handleProxyRequest(c, backends);
-		}
+		const byHost = parseSandboxHost(c.req.header("host") ?? "");
+		if (byHost) return handleProxyRequest(c, sandboxService, byHost);
 
-		// Route by E2B SDK header (gRPC transport includes sandbox ID)
-		const sandboxId = c.req.header("E2b-Sandbox-Id");
-		if (sandboxId) {
-			return handleProxyRequest(c, backends, sandboxId);
+		// Route by the E2B SDK's E2b-Sandbox-Id / E2b-Sandbox-Port headers
+		const headerId = c.req.header("E2b-Sandbox-Id");
+		if (headerId) {
+			const sandboxId = await resolveDebugSandbox(headerId, sandboxService);
+			if (!sandboxId) {
+				return c.json({ code: 502, message: "No running sandbox found" }, 502);
+			}
+			const portHeader = c.req.header("E2b-Sandbox-Port");
+			const port = portHeader ? Number(portHeader) : config.envdPort;
+			if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+				return c.json(
+					{ code: 400, message: `Invalid sandbox port ${portHeader}` },
+					400,
+				);
+			}
+			return handleProxyRequest(c, sandboxService, { sandboxId, port });
 		}
 
 		// Route by access token (envd REST API — files, health)
 		const accessToken = c.req.header("X-Access-Token");
 		if (accessToken) {
-			const resolvedId = resolveSandboxByToken(accessToken);
-			if (resolvedId) {
-				return handleProxyRequest(c, backends, resolvedId);
+			const sandboxId = resolveSandboxByToken(accessToken);
+			if (sandboxId) {
+				return handleProxyRequest(c, sandboxService, {
+					sandboxId,
+					port: config.envdPort,
+				});
 			}
 		}
 

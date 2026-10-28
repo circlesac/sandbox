@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { LEGACY_LIFECYCLE } from "../../../../src/server/services/lifecycle.ts";
 
 vi.mock("../../../../src/server/config.ts", () => ({
 	config: { envdPort: 49983 },
@@ -95,6 +96,10 @@ describe("TartBackend", () => {
 				)
 				// clone call
 				.mockReturnValueOnce("")
+				// tart list call (is the clone suspended?)
+				.mockReturnValueOnce(
+					JSON.stringify([{ Name: "sandbox-sbx-test1", State: "stopped" }]),
+				)
 				// tart ip call
 				.mockReturnValueOnce("192.168.64.5");
 
@@ -115,6 +120,7 @@ describe("TartBackend", () => {
 				accessToken: "token-abc",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 
 			globalThis.setTimeout = originalSetTimeout;
@@ -134,6 +140,20 @@ describe("TartBackend", () => {
 				["tart", "run", "sandbox-sbx-test1", "--no-graphics", "--suspendable"],
 				{ stdio: ["ignore", "ignore", "ignore"] },
 			);
+
+			// envd goes through the local proxy; other ports to the VM's address
+			expect(await backend.resolveTarget("sbx-test1", 49983)).toEqual({
+				host: "localhost",
+				port: mockPort,
+			});
+			expect(await backend.resolveTarget("sbx-test1", 3000)).toEqual({
+				host: "192.168.64.5",
+				port: 3000,
+			});
+			// A stopped tart VM counts as finished, so only memory-keeping pauses exist
+			await expect(
+				backend.stopContainer("sbx-test1", { keepMemory: false }),
+			).rejects.toThrow(/cannot pause without keeping memory/);
 		});
 	});
 

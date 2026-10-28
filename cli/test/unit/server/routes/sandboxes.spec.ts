@@ -209,7 +209,7 @@ describe("sandbox controllers", () => {
 			const json = (await res.json()) as Record<string, unknown>;
 			expect(json.sandboxID).toBe("sbx-test123");
 			expect(json.envdAccessToken).toBe("token-abc");
-			expect(service.create).toHaveBeenCalledWith(body);
+			expect(service.create).toHaveBeenCalledWith(body, expect.any(Object));
 		});
 	});
 
@@ -223,7 +223,11 @@ describe("sandbox controllers", () => {
 			expect([200, 201]).toContain(res.status);
 			const json = (await res.json()) as Record<string, unknown>;
 			expect(json.sandboxID).toBe("sbx-test123");
-			expect(service.connect).toHaveBeenCalledWith("sbx-test123", 600);
+			expect(service.connect).toHaveBeenCalledWith(
+				"sbx-test123",
+				600,
+				expect.any(Object),
+			);
 		});
 
 		it("accepts an omitted body, which v2 makes optional", async () => {
@@ -231,7 +235,11 @@ describe("sandbox controllers", () => {
 				method: "POST",
 			});
 			expect([200, 201]).toContain(res.status);
-			expect(service.connect).toHaveBeenCalledWith("sbx-test123", undefined);
+			expect(service.connect).toHaveBeenCalledWith(
+				"sbx-test123",
+				undefined,
+				expect.any(Object),
+			);
 		});
 
 		it("returns 404 for an unknown sandbox", async () => {
@@ -275,6 +283,17 @@ describe("sandbox controllers", () => {
 			expect(res.status).toBe(404);
 		});
 
+		it("returns 500 with the cause for any other failure", async () => {
+			vi.spyOn(console, "error").mockImplementation(() => {});
+			vi.mocked(service.create).mockRejectedValueOnce(
+				new Error("pollUntil timed out after 30000ms"),
+			);
+			const res = await post();
+			expect(res.status).toBe(500);
+			const json = (await res.json()) as Record<string, unknown>;
+			expect(json.message).toBe("pollUntil timed out after 30000ms");
+		});
+
 		it("returns 400 for an unsupported request", async () => {
 			vi.mocked(service.create).mockRejectedValueOnce(
 				new UnsupportedError("volumeMounts is not supported"),
@@ -315,6 +334,20 @@ describe("sandbox controllers", () => {
 				body: JSON.stringify({ templateID: "base" }),
 			});
 			expect(service.kill).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("POST /sandboxes/:sandboxID/pause", () => {
+		it("keeps memory unless the body asks for a filesystem-only pause", async () => {
+			await app.request("/sandboxes/sbx-test123/pause", { method: "POST" });
+			expect(service.pause).toHaveBeenLastCalledWith("sbx-test123", true);
+
+			await app.request("/sandboxes/sbx-test123/pause", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ memory: false }),
+			});
+			expect(service.pause).toHaveBeenLastCalledWith("sbx-test123", false);
 		});
 	});
 });

@@ -2,7 +2,13 @@ import { execSync } from "node:child_process";
 import { createServer } from "node:net";
 import { config } from "../config.ts";
 import type { SandboxInfo } from "../types.ts";
-import type { ContainerBackend, CreateContainerOpts } from "./backend.ts";
+import { UnsupportedError } from "../errors.ts";
+import type {
+	ContainerBackend,
+	CreateContainerOpts,
+	ProxyTarget,
+} from "./backend.ts";
+import type { SandboxLifecycle } from "./lifecycle.ts";
 
 interface ShruInstance {
 	sandboxId: string;
@@ -13,6 +19,7 @@ interface ShruInstance {
 	createdAt: string;
 	timeoutSec: number;
 	metadata?: Record<string, string>;
+	lifecycle: SandboxLifecycle;
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -58,6 +65,10 @@ function listCheckpoints(): string[] {
 export class ShuruBackend implements ContainerBackend {
 	readonly type = "shuru" as const;
 	readonly supportsPause = false;
+	readonly supportsFilesystemPause = false;
+	// The Alpine envd build runs without an access token (memguard), so the
+	// control plane checks it instead.
+	readonly envdChecksAccessToken = false;
 	private instances = new Map<string, ShruInstance>();
 
 	async resolveImage(templateId: string): Promise<string> {
@@ -107,6 +118,7 @@ export class ShuruBackend implements ContainerBackend {
 			createdAt: new Date().toISOString(),
 			timeoutSec: opts.timeoutSec,
 			metadata: opts.metadata,
+			lifecycle: opts.lifecycle,
 		};
 		this.instances.set(opts.sandboxId, instance);
 
@@ -164,6 +176,21 @@ export class ShuruBackend implements ContainerBackend {
 		return true;
 	}
 
+	/** Only envd's port is forwarded out of a shuru VM. */
+	async resolveTarget(
+		sandboxId: string,
+		port: number,
+	): Promise<ProxyTarget | null> {
+		const instance = this.instances.get(sandboxId);
+		if (!instance || !isProcessAlive(instance.pid)) return null;
+		if (port !== config.envdPort) {
+			throw new UnsupportedError(
+				`Port ${port} is not reachable on the shuru backend; only envd's port is forwarded`,
+			);
+		}
+		return { host: "localhost", port: instance.hostPort };
+	}
+
 	async inspectSandbox(sandboxId: string): Promise<SandboxInfo | null> {
 		const instance = this.instances.get(sandboxId);
 		if (!instance) return null;
@@ -183,6 +210,7 @@ export class ShuruBackend implements ContainerBackend {
 			hostPort: instance.hostPort,
 			state: "running",
 			metadata: instance.metadata,
+			lifecycle: instance.lifecycle,
 		};
 	}
 
@@ -211,6 +239,7 @@ export class ShuruBackend implements ContainerBackend {
 				hostPort: instance.hostPort,
 				state: "running",
 				metadata: instance.metadata,
+				lifecycle: instance.lifecycle,
 			});
 		}
 

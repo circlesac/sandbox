@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { LEGACY_LIFECYCLE } from "../../../../src/server/services/lifecycle.ts";
 
 vi.mock("../../../../src/server/config.ts", () => ({
 	config: { envdPort: 49983 },
@@ -92,6 +93,7 @@ describe("ShuruBackend", () => {
 				accessToken: "token-abc",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 
 			expect(result.instanceId).toBe("12345");
@@ -121,10 +123,31 @@ describe("ShuruBackend", () => {
 				accessToken: "token-abc",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 
 			const args = spawnMock.mock.calls[0]![0] as string[];
 			expect(args).not.toContain("--from");
+		});
+	});
+
+	describe("resolveTarget", () => {
+		it("forwards envd and explains that no other port is reachable", async () => {
+			execSyncMock.mockReturnValue("sandbox-base\n");
+			await backend.createContainer({
+				sandboxId: "sbx-ports",
+				accessToken: "token",
+				templateId: "base",
+				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
+			});
+			expect(await backend.resolveTarget("sbx-ports", 49983)).toEqual({
+				host: "localhost",
+				port: mockPort,
+			});
+			await expect(backend.resolveTarget("sbx-ports", 3000)).rejects.toThrow(
+				/only envd's port is forwarded/,
+			);
 		});
 	});
 
@@ -141,6 +164,7 @@ describe("ShuruBackend", () => {
 				accessToken: "token-xyz",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 
 			const info = await backend.inspectSandbox("sbx-inspect");
@@ -158,6 +182,7 @@ describe("ShuruBackend", () => {
 				accessToken: "token-abc",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 
 			processAlive = false;
@@ -180,6 +205,7 @@ describe("ShuruBackend", () => {
 				accessToken: "token-abc",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 
 			const result = await backend.stopContainer("sbx-stop");
@@ -203,6 +229,7 @@ describe("ShuruBackend", () => {
 				accessToken: "token-abc",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 
 			const result = await backend.removeContainer("sbx-remove");
@@ -222,6 +249,7 @@ describe("ShuruBackend", () => {
 				accessToken: "token-abc",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 
 			const result = await backend.startContainer("sbx-alive");
@@ -243,12 +271,14 @@ describe("ShuruBackend", () => {
 				accessToken: "token-1",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 			await backend.createContainer({
 				sandboxId: "sbx-list2",
 				accessToken: "token-2",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 
 			const list = await backend.listSandboxes();
@@ -266,6 +296,7 @@ describe("ShuruBackend", () => {
 				accessToken: "token-1",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 
 			const list = await backend.listSandboxes({ state: "paused" });
@@ -279,6 +310,7 @@ describe("ShuruBackend", () => {
 				accessToken: "token-1",
 				templateId: "base",
 				timeoutSec: 300,
+				lifecycle: LEGACY_LIFECYCLE,
 			});
 
 			processAlive = false;

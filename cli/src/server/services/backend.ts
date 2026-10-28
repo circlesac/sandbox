@@ -1,4 +1,5 @@
 import type { SandboxInfo } from "../types.ts";
+import type { SandboxLifecycle } from "./lifecycle.ts";
 import { DockerService } from "./docker.ts";
 import { ShuruBackend } from "./shuru.ts";
 import { TartBackend } from "./tart.ts";
@@ -13,11 +14,22 @@ export interface CreateContainerOpts {
 	timeoutSec: number;
 	envVars?: Record<string, string>;
 	metadata?: Record<string, string>;
+	lifecycle: SandboxLifecycle;
+}
+
+/** Where to send a request for a sandbox port. */
+export interface ProxyTarget {
+	host: string;
+	port: number;
 }
 
 export interface ContainerBackend {
 	readonly type: BackendType;
 	readonly supportsPause: boolean;
+	/** Whether a pause can drop memory and keep only the filesystem. */
+	readonly supportsFilesystemPause: boolean;
+	/** Whether the sandbox's envd itself rejects requests without the access token. */
+	readonly envdChecksAccessToken: boolean;
 
 	resolveImage(templateId: string): Promise<string>;
 
@@ -32,7 +44,14 @@ export interface ContainerBackend {
 
 	refreshTimeout?(sandboxId: string, timeoutSec: number): Promise<void> | void;
 
-	stopContainer(sandboxId: string): Promise<boolean>;
+	/** Pauses a sandbox; keepMemory false keeps only the filesystem. */
+	stopContainer(
+		sandboxId: string,
+		opts?: { keepMemory?: boolean },
+	): Promise<boolean>;
+
+	/** Resolves a port inside a running sandbox to an address the server can reach. */
+	resolveTarget(sandboxId: string, port: number): Promise<ProxyTarget | null>;
 
 	removeContainer(sandboxId: string): Promise<boolean>;
 

@@ -1,3 +1,5 @@
+import type { SandboxLifecycle } from "./services/lifecycle.ts";
+
 export interface SandboxLabels {
 	"e2b.sandbox-id": string;
 	"e2b.access-token": string;
@@ -5,6 +7,7 @@ export interface SandboxLabels {
 	"e2b.created-at": string;
 	"e2b.timeout": string;
 	"e2b.metadata"?: string;
+	"e2b.lifecycle"?: string;
 }
 
 export interface SandboxInfo {
@@ -17,4 +20,5 @@ export interface SandboxInfo {
 	hostPort: number;
 	state: "running" | "paused";
 	metadata?: Record<string, string>;
+	lifecycle: SandboxLifecycle;
 }
