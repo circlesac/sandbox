@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../src/server/config.ts", () => ({
   config: {
@@ -8,9 +8,13 @@ vi.mock("../../../../src/server/config.ts", () => ({
   },
 }));
 
-import { createBackend } from "../../../../src/server/services/backend.ts";
+import {
+  createBackend,
+  createBackends,
+} from "../../../../src/server/services/backend.ts";
 import { DockerService } from "../../../../src/server/services/docker.ts";
 import { ShuruBackend } from "../../../../src/server/services/shuru.ts";
+import { TartBackend } from "../../../../src/server/services/tart.ts";
 
 describe("createBackend", () => {
   it("returns DockerService for 'docker'", () => {
@@ -32,5 +36,40 @@ describe("createBackend", () => {
     expect(() => createBackend("unknown" as any, {})).toThrow(
       "Unknown backend",
     );
+  });
+});
+
+describe("createBackends", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("creates the tart macOS backend when tart is installed", () => {
+    vi.spyOn(TartBackend, "isAvailable").mockReturnValue(true);
+
+    const backends = createBackends({ linux: "docker", macos: "tart" });
+
+    expect(backends.linux).toBeInstanceOf(DockerService);
+    expect(backends.macos).toBeInstanceOf(TartBackend);
+  });
+
+  it("disables the tart macOS backend when tart is not installed", () => {
+    vi.spyOn(TartBackend, "isAvailable").mockReturnValue(false);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const backends = createBackends({ linux: "docker", macos: "tart" });
+
+    expect(backends.macos).toBeUndefined();
+    expect(backends.linux).toBeInstanceOf(DockerService);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("never probes for tart when no macOS backend is requested", () => {
+    const isAvailable = vi.spyOn(TartBackend, "isAvailable");
+
+    const backends = createBackends({ linux: "docker" });
+
+    expect(backends.macos).toBeUndefined();
+    expect(isAvailable).not.toHaveBeenCalled();
   });
 });

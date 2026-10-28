@@ -164,4 +164,40 @@ describe("TartBackend", () => {
       expect(list).toHaveLength(0);
     });
   });
+
+  describe("isAvailable", () => {
+    it("returns true when the tart CLI runs", () => {
+      execSyncMock.mockReturnValue("tart 2.0.0");
+      expect(TartBackend.isAvailable()).toBe(true);
+    });
+
+    it("returns false when the tart CLI is not installed", () => {
+      execSyncMock.mockImplementation(() => {
+        throw new Error("/bin/sh: tart: command not found");
+      });
+      expect(TartBackend.isAvailable()).toBe(false);
+    });
+
+    it("probes without leaking output to the console", () => {
+      execSyncMock.mockReturnValue("");
+      TartBackend.isAvailable();
+      expect(execSyncMock).toHaveBeenCalledWith(
+        "tart --version",
+        expect.objectContaining({ stdio: "ignore" }),
+      );
+    });
+  });
+
+  describe("tart command execution", () => {
+    it("captures stderr instead of leaking it to the parent console", async () => {
+      execSyncMock.mockReturnValue(JSON.stringify([]));
+
+      await backend.listSandboxes();
+
+      expect(execSyncMock).toHaveBeenCalledWith(
+        "tart list --format json",
+        expect.objectContaining({ stdio: ["ignore", "pipe", "pipe"] }),
+      );
+    });
+  });
 });

@@ -69,10 +69,16 @@ export function createBackends(opts: {
   macos?: BackendType;
   dockerSocket?: string;
 }): BackendMap {
+  let macos = opts.macos;
+
+  if (macos === "tart" && !TartBackend.isAvailable()) {
+    macos = undefined;
+  }
+
   return {
     linux: createBackend(opts.linux, { dockerSocket: opts.dockerSocket }),
-    macos: opts.macos
-      ? createBackend(opts.macos, { dockerSocket: opts.dockerSocket })
+    macos: macos
+      ? createBackend(macos, { dockerSocket: opts.dockerSocket })
       : undefined,
   };
 }

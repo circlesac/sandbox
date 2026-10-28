@@ -27,6 +27,7 @@ function tartExec(args: string[], timeoutMs = 10_000): string {
   return execSync(`tart ${args.join(" ")}`, {
     encoding: "utf-8",
     timeout: timeoutMs,
+    stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 }
 
@@ -91,6 +92,15 @@ export class TartBackend implements ContainerBackend {
   readonly type = "tart" as const;
   readonly supportsPause = true;
   private instances = new Map<string, TartInstance>();
+
+  static isAvailable(): boolean {
+    try {
+      execSync("tart --version", { stdio: "ignore", timeout: 5_000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   private vmIsSuspended(vmName: string): boolean {
     const vms = tartList();
