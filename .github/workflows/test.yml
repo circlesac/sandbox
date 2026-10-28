@@ -1,0 +1,43 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # GitHub-hosted on purpose: this public repository takes fork pull
+    # requests, whose code must not run on the organization's self-hosted runners.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # The Docker backend pulls the template image inside the create request
+      # when no local sandbox-base:latest exists, which can outlast the SDK's
+      # request timeout (#15). Pull it once before the suites run.
+      - name: Prepare the sandbox base image
+        run: |
+          docker pull ghcr.io/circlesac/sandbox-base:latest
+          docker tag ghcr.io/circlesac/sandbox-base:latest sandbox-base:latest
+
+      - name: Format check, lint, type check, unit and Docker integration tests
+        run: bun run test
+
+      - name: E2B SDK version matrix
+        run: bun run test:sdk-matrix

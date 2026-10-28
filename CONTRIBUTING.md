@@ -5,10 +5,23 @@
 ```bash
 cd cli
 bun install
-bun run dev serve     # run server in dev mode
-npx vitest run        # unit + integration tests
-bun run typecheck
+bun run dev serve        # run server in dev mode
+bun run test             # format check, lint, type check, unit + integration tests
+bun run test:sdk-matrix  # E2B smoke suite on the lowest supported and the latest SDK
+bun run format           # apply formatting
 ```
+
+The Docker integration tests need a running Docker daemon and a local `sandbox-base:latest` image. Build it with `docker build -t sandbox-base:latest docker/sandbox`, or pull `ghcr.io/circlesac/sandbox-base:latest` and tag it as `sandbox-base:latest`. Without a local tag, every sandbox creation pulls from GHCR, which can outlast the SDK's 60-second request timeout. Locally the suite is skipped when Docker is unavailable; in CI that is a failure.
+
+`test:sdk-matrix` installs each E2B SDK version into a temporary directory and runs `test/integration/e2b-smoke.spec.ts` with the `e2b` import pointed at it. The lowest supported version is the floor of the `e2b` range in `cli/package.json`. Pass versions as arguments to test others, for example `bun run test:sdk-matrix 2.40.0`.
+
+Pull requests run the same `test` and `test:sdk-matrix` scripts in `.github/workflows/test.yml`.
+
+### Tooling
+
+| Package | Version | Registry date | Reason |
+| --- | --- | --- | --- |
+| `@biomejs/biome` | 2.6.3 | 2026-10-24 | One natively compiled tool for formatting and linting, configured from `biome init` plus one override: `noExplicitAny` is raised from warning to error. |
 
 ### envd-lite (Tart backend)
 
