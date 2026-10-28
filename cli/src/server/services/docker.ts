@@ -9,6 +9,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { config } from "../config.ts";
+import { NotFoundError, RetryableError } from "../errors.ts";
 import type { SandboxInfo, SandboxLabels } from "../types.ts";
 import type { ContainerBackend, CreateContainerOpts } from "./backend.ts";
 
@@ -33,9 +34,19 @@ export class DockerService implements ContainerBackend {
 	private docker: Docker;
 	private timeoutState = new Map<string, DockerTimeoutState>();
 	private timeoutStatePath: string | null;
+	private pulls = new Map<string, Promise<void>>();
+	private imagePullWaitMs: number;
 
-	constructor(opts: { socketPath: string; statePath?: string | null }) {
+	constructor(opts: {
+		socketPath: string;
+		statePath?: string | null;
+		imagePullWaitMs?: number;
+	}) {
 		this.docker = new Docker({ socketPath: opts.socketPath });
+		// The E2B SDK retries a 503 that carries Should-Retry within its 60 s
+		// request timeout, so answer within a fraction of it and let the SDK
+		// come back rather than holding one attempt for the whole window.
+		this.imagePullWaitMs = opts.imagePullWaitMs ?? 10_000;
 		this.timeoutStatePath =
 			opts.statePath === undefined
 				? join(homedir(), ".sandbox", "docker-timeouts.json")
@@ -43,18 +54,70 @@ export class DockerService implements ContainerBackend {
 		this.loadTimeoutState();
 	}
 
+	/**
+	 * Resolves a template to an image without contacting the registry when a
+	 * copy is already cached. When the image has to be downloaded, waits at
+	 * most imagePullWaitMs and then answers with a retryable error; the
+	 * download continues in the background and a retry picks it up.
+	 */
 	async resolveImage(templateId: string): Promise<string> {
 		const local = localImageName(templateId);
-		try {
-			await this.docker.getImage(local).inspect();
-			return local;
-		} catch {
-			// not found locally
-		}
+		if (await this.imageExists(local)) return local;
 
 		const remote = registryImageName(templateId);
+		if (await this.imageExists(remote)) return remote;
+
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const waited = new Promise<"waiting">((resolve) => {
+			timer = setTimeout(() => resolve("waiting"), this.imagePullWaitMs);
+		});
 		try {
-			await new Promise<void>((resolve, reject) => {
+			const outcome = await Promise.race([
+				this.pullImage(templateId).then(() => "pulled" as const),
+				waited,
+			]);
+			if (outcome === "waiting") {
+				throw new RetryableError(
+					`Template "${templateId}" image ${remote} is still downloading; retry shortly`,
+					5,
+				);
+			}
+			return remote;
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	/** Starts downloading a template image in the background unless it is cached. */
+	prefetchImage(templateId: string): void {
+		(async () => {
+			if (await this.imageExists(localImageName(templateId))) return;
+			if (await this.imageExists(registryImageName(templateId))) return;
+			await this.pullImage(templateId);
+			console.log(`Prefetched ${registryImageName(templateId)}`);
+		})().catch((err) => {
+			console.warn(
+				`Prefetching template "${templateId}" failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		});
+	}
+
+	private async imageExists(name: string): Promise<boolean> {
+		try {
+			await this.docker.getImage(name).inspect();
+			return true;
+		} catch (err: unknown) {
+			if (isDockerNotFound(err)) return false;
+			throw err;
+		}
+	}
+
+	/** One download per image, shared by every request that needs it. */
+	private pullImage(templateId: string): Promise<void> {
+		const remote = registryImageName(templateId);
+		let pull = this.pulls.get(remote);
+		if (!pull) {
+			pull = new Promise<void>((resolve, reject) => {
 				this.docker.pull(
 					remote,
 					(err: Error | null, stream: NodeJS.ReadableStream) => {
@@ -64,13 +127,16 @@ export class DockerService implements ContainerBackend {
 						);
 					},
 				);
-			});
-			return remote;
-		} catch {
-			throw new Error(
-				`Template "${templateId}" not found. Checked:\n  - ${local}\n  - ${remote}`,
-			);
+			})
+				.catch(() => {
+					throw new NotFoundError(
+						`Template "${templateId}" not found. Checked:\n  - ${localImageName(templateId)}\n  - ${remote}`,
+					);
+				})
+				.finally(() => this.pulls.delete(remote));
+			this.pulls.set(remote, pull);
 		}
+		return pull;
 	}
 
 	async createContainer(

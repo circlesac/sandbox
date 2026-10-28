@@ -21,6 +21,9 @@ export interface ContainerBackend {
 
 	resolveImage(templateId: string): Promise<string>;
 
+	/** Optional: start downloading a template image ahead of the first create. */
+	prefetchImage?(templateId: string): void;
+
 	createContainer(
 		opts: CreateContainerOpts,
 	): Promise<{ instanceId: string; hostPort: number }>;

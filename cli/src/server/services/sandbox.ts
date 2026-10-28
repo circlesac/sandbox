@@ -1,4 +1,5 @@
 import { config } from "../config.ts";
+import { NotFoundError, UnsupportedError } from "../errors.ts";
 import { generateAccessToken, generateSandboxId } from "../lib/id.ts";
 import {
 	resolvePlatform,
@@ -310,16 +311,4 @@ export class SandboxService {
 	}
 }
 
-export class NotFoundError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "NotFoundError";
-	}
-}
-
-export class UnsupportedError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "UnsupportedError";
-	}
-}
+export { NotFoundError, UnsupportedError };

@@ -1,6 +1,7 @@
 import { type fromHono, OpenAPIRoute } from "chanfana";
 import type { Context } from "hono";
 import { z } from "zod";
+import { RetryableError } from "../../errors.ts";
 import {
 	NotFoundError,
 	UnsupportedError,
@@ -20,6 +21,28 @@ let sandboxService: SandboxService;
 
 export function setSandboxService(service: SandboxService) {
 	sandboxService = service;
+}
+
+/** Maps service errors to E2B-style error bodies; anything else is rethrown as a 500. */
+function errorResponse(c: Context, err: unknown) {
+	if (err instanceof NotFoundError) {
+		return c.json({ code: 404, error: "not_found", message: err.message }, 404);
+	}
+	if (err instanceof UnsupportedError) {
+		return c.json(
+			{ code: 400, error: "unsupported", message: err.message },
+			400,
+		);
+	}
+	if (err instanceof RetryableError) {
+		c.header("Retry-After", String(err.retryAfterSec));
+		c.header("Should-Retry", "true");
+		return c.json(
+			{ code: 503, error: "unavailable", message: err.message },
+			503,
+		);
+	}
+	throw err;
 }
 
 export class CreateSandbox extends OpenAPIRoute {
@@ -57,8 +80,20 @@ export class CreateSandbox extends OpenAPIRoute {
 			return c.json(partial, 202);
 		}
 
-		const result = await sandboxService.create(body);
-		return c.json(result, 201);
+		try {
+			const result = await sandboxService.create(body);
+			// A client that gave up (for example on the SDK's request timeout)
+			// never learns this sandbox's ID, so nothing would ever kill it.
+			if (c.req.raw.signal.aborted) {
+				await sandboxService.kill(result.sandboxID).catch(() => {});
+				console.warn(
+					`Removed sandbox ${result.sandboxID}: the client disconnected before creation finished`,
+				);
+			}
+			return c.json(result, 201);
+		} catch (err) {
+			return errorResponse(c, err);
+		}
 	}
 }
 

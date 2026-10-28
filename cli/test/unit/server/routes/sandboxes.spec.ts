@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fromHono, extendZodWithOpenApi } from "chanfana";
 import { z } from "zod";
 import { Hono } from "hono";
+import { RetryableError } from "../../../../src/server/errors.ts";
 import {
 	NotFoundError,
 	type SandboxService,
+	UnsupportedError,
 } from "../../../../src/server/services/sandbox.ts";
 
 extendZodWithOpenApi(z);
@@ -242,6 +244,77 @@ describe("sandbox controllers", () => {
 				body: JSON.stringify({ timeout: 60 }),
 			});
 			expect(res.status).toBe(404);
+		});
+	});
+
+	describe("POST /sandboxes errors", () => {
+		const post = () =>
+			app.request("/sandboxes", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ templateID: "base" }),
+			});
+
+		it("returns 503 with Retry-After while the template image downloads", async () => {
+			vi.mocked(service.create).mockRejectedValueOnce(
+				new RetryableError("image is still downloading; retry shortly", 10),
+			);
+			const res = await post();
+			expect(res.status).toBe(503);
+			expect(res.headers.get("Retry-After")).toBe("10");
+			expect(res.headers.get("Should-Retry")).toBe("true");
+			const json = (await res.json()) as Record<string, unknown>;
+			expect(json.message).toMatch(/still downloading/);
+		});
+
+		it("returns 404 for an unknown template", async () => {
+			vi.mocked(service.create).mockRejectedValueOnce(
+				new NotFoundError('Template "nope" not found'),
+			);
+			const res = await post();
+			expect(res.status).toBe(404);
+		});
+
+		it("returns 400 for an unsupported request", async () => {
+			vi.mocked(service.create).mockRejectedValueOnce(
+				new UnsupportedError("volumeMounts is not supported"),
+			);
+			const res = await post();
+			expect(res.status).toBe(400);
+		});
+	});
+
+	describe("POST /sandboxes abandoned by the client", () => {
+		it("kills the sandbox when the client disconnected before creation finished", async () => {
+			const controller = new AbortController();
+			vi.mocked(service.create).mockImplementationOnce(async () => {
+				controller.abort();
+				return {
+					sandboxID: "sbx-orphan",
+					templateID: "base",
+					clientID: "sbx-orphan",
+					envdVersion: "0.5.3",
+					envdAccessToken: "token",
+					trafficAccessToken: null,
+					domain: null,
+				};
+			});
+			await app.request("/sandboxes", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ templateID: "base" }),
+				signal: controller.signal,
+			});
+			expect(service.kill).toHaveBeenCalledWith("sbx-orphan");
+		});
+
+		it("keeps the sandbox when the client is still connected", async () => {
+			await app.request("/sandboxes", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ templateID: "base" }),
+			});
+			expect(service.kill).not.toHaveBeenCalled();
 		});
 	});
 });

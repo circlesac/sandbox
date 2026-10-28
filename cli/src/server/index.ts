@@ -9,6 +9,9 @@ import { Hono } from "hono";
 
 const { app, backends, sandboxService, ttlService } = createApp();
 
+// Download the default template before the first create needs it.
+backends.linux.prefetchImage?.("base");
+
 // TTL reconciliation on startup
 async function reconcileTtls() {
 	const allBackends = [backends.linux, backends.macos].filter(Boolean);
