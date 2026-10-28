@@ -17,6 +17,7 @@
 		"postinstall": "node bin/install.js",
 		"test": "bun run format:check && bun run lint && bun run typecheck && vitest run",
 		"test:watch": "vitest",
+		"test:sdk-matrix": "bun run scripts/sdk-matrix.ts",
 		"typecheck": "tsc --noEmit",
 		"format": "biome format --write .",
 		"format:check": "biome format .",

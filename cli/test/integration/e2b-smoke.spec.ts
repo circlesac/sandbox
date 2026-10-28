@@ -48,6 +48,22 @@ describe.skipIf(!opts)("E2B Smoke", { timeout: 120_000 }, () => {
 			const found = sandboxes.find((s) => s.sandboxId === sandbox.sandboxId);
 			expect(found).toBeDefined();
 		});
+
+		it("reconnects to a running sandbox with Sandbox.connect", async () => {
+			const connected = await Sandbox.connect(sandbox.sandboxId, opts!);
+			expect(connected.sandboxId).toBe(sandbox.sandboxId);
+			const result = await connected.commands.run("echo connected");
+			expect(result.stdout.trim()).toBe("connected");
+		});
+
+		it("resumes a paused sandbox on connect and keeps its files", async () => {
+			await sandbox.files.write("/tmp/before-pause.txt", "kept");
+			await sandbox.pause();
+
+			sandbox = await Sandbox.connect(sandbox.sandboxId, opts!);
+			const result = await sandbox.commands.run("cat /tmp/before-pause.txt");
+			expect(result.stdout).toBe("kept");
+		});
 	});
 
 	// ── Commands ───────────────────────────────────────────────

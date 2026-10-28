@@ -41,6 +41,11 @@ export default async function setup() {
 	// Check Docker availability
 	const docker = spawnSync("docker", ["info"], { stdio: "ignore" });
 	if (docker.status !== 0) {
+		if (process.env.CI) {
+			throw new Error(
+				"[global-setup] Docker is required in CI; the integration suite would otherwise be skipped",
+			);
+		}
 		console.log(
 			"[global-setup] Docker not available — skipping integration server",
 		);
