@@ -18,7 +18,16 @@ import {
 	type BackendMap,
 	type BackendType,
 } from "./services/backend.ts";
+import { setSnapshotTemplateService } from "./controllers/sandboxes/extra.ts";
+import {
+	registerNotProvidedRoutes,
+	registerTemplateRoutes,
+	registerTemplateUploadRoute,
+	setTemplateService,
+} from "./controllers/templates/index.ts";
+import { DockerService } from "./services/docker.ts";
 import { EnvdService } from "./services/envd.ts";
+import { TemplateService } from "./services/templates.ts";
 import { SandboxService } from "./services/sandbox.ts";
 import { TtlService } from "./services/ttl.ts";
 import {
@@ -103,17 +112,45 @@ export function createApp(opts?: {
 			},
 			tags: [
 				{ name: "Sandboxes", description: "Sandbox lifecycle management" },
+				{
+					name: "Templates",
+					description: "Template builds, tags, and snapshots",
+				},
 			],
 		},
 	});
 
-	// Auth middleware for sandbox routes
-	app.use("/sandboxes", authMiddleware);
-	app.use("/sandboxes/*", authMiddleware);
-	app.use("/v2/sandboxes", authMiddleware);
-	app.use("/v2/sandboxes/*", authMiddleware);
+	// Auth middleware for the API; template file uploads carry their own token
+	for (const path of [
+		"/sandboxes",
+		"/sandboxes/*",
+		"/v2/sandboxes",
+		"/v2/sandboxes/*",
+		"/snapshots",
+		"/templates/*",
+		"/v2/templates/*",
+		"/v3/templates",
+		"/volumes",
+		"/volumes/*",
+		"/volumecontent/*",
+		"/secrets",
+		"/secrets/*",
+	]) {
+		app.use(path, authMiddleware);
+	}
 
+	// Templates and snapshots are Docker images, so they need the Docker backend.
+	const templateService =
+		backends.linux instanceof DockerService
+			? new TemplateService(backends.linux)
+			: null;
+	setSnapshotTemplateService(templateService);
+	setTemplateService(templateService);
+
+	registerTemplateUploadRoute(app);
+	registerNotProvidedRoutes(app);
 	registerSandboxRoutes(openapi);
+	registerTemplateRoutes(openapi);
 
-	return { app, backends, sandboxService, ttlService };
+	return { app, backends, sandboxService, ttlService, templateService };
 }

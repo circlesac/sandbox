@@ -34,6 +34,7 @@ export const providers: Record<Provider, ProviderSuite> = {
 		specs: [
 			"test/integration/e2b-smoke.spec.ts",
 			"test/integration/e2b-lifecycle.spec.ts",
+			"test/integration/e2b-templates.spec.ts",
 		],
 		missing: () =>
 			succeeds("docker", ["info"]) ? null : "Docker daemon is not reachable",

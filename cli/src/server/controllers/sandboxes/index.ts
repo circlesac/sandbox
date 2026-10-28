@@ -1,7 +1,12 @@
 import { type fromHono, OpenAPIRoute } from "chanfana";
 import type { Context } from "hono";
 import { z } from "zod";
-import { RetryableError } from "../../errors.ts";
+import { errorResponse, requestContext } from "../http.ts";
+import {
+	ListSandboxesFiltered,
+	registerExtraSandboxRoutes,
+	setExtraSandboxService,
+} from "./extra.ts";
 import {
 	NotFoundError,
 	UnsupportedError,
@@ -21,36 +26,7 @@ let sandboxService: SandboxService;
 
 export function setSandboxService(service: SandboxService) {
 	sandboxService = service;
-}
-
-/** The host the client used, so the SDK's getHost() builds URLs back to this server. */
-function requestContext(c: Context) {
-	return { domain: c.req.header("host") ?? null };
-}
-
-/** Maps service errors to E2B-style error bodies. */
-function errorResponse(c: Context, err: unknown) {
-	if (err instanceof NotFoundError) {
-		return c.json({ code: 404, error: "not_found", message: err.message }, 404);
-	}
-	if (err instanceof UnsupportedError) {
-		return c.json(
-			{ code: 400, error: "unsupported", message: err.message },
-			400,
-		);
-	}
-	if (err instanceof RetryableError) {
-		c.header("Retry-After", String(err.retryAfterSec));
-		c.header("Should-Retry", "true");
-		return c.json(
-			{ code: 503, error: "unavailable", message: err.message },
-			503,
-		);
-	}
-	// Anything else is a server-side failure; say what it was.
-	console.error(err);
-	const message = err instanceof Error ? err.message : String(err);
-	return c.json({ code: 500, error: "internal", message }, 500);
+	setExtraSandboxService(service);
 }
 
 export class CreateSandbox extends OpenAPIRoute {
@@ -102,28 +78,6 @@ export class CreateSandbox extends OpenAPIRoute {
 		} catch (err) {
 			return errorResponse(c, err);
 		}
-	}
-}
-
-export class ListSandboxes extends OpenAPIRoute {
-	override schema = {
-		tags: ["Sandboxes"],
-		summary: "List all sandboxes",
-		responses: {
-			200: {
-				description: "List of sandboxes",
-				content: {
-					"application/json": {
-						schema: z.array(SandboxDetailSchema),
-					},
-				},
-			},
-		},
-	};
-
-	override async handle(c: Context) {
-		const sandboxes = await sandboxService.list();
-		return c.json(sandboxes, 200);
 	}
 }
 
@@ -400,7 +354,9 @@ export class SetSandboxTimeout extends OpenAPIRoute {
  * the /v2 routes; earlier SDKs use the unversioned ones.
  */
 export function registerSandboxRoutes(openapi: ReturnType<typeof fromHono>) {
-	openapi.get("/sandboxes", ListSandboxes);
+	// Before /sandboxes/:sandboxID, so /sandboxes/metrics is not read as an ID.
+	registerExtraSandboxRoutes(openapi);
+	openapi.get("/sandboxes", ListSandboxesFiltered);
 	openapi.post("/sandboxes", CreateSandbox);
 	openapi.get("/sandboxes/:sandboxID", GetSandbox);
 	openapi.delete("/sandboxes/:sandboxID", DeleteSandbox);
@@ -409,7 +365,7 @@ export function registerSandboxRoutes(openapi: ReturnType<typeof fromHono>) {
 	openapi.post("/sandboxes/:sandboxID/connect", ConnectSandbox);
 	openapi.post("/sandboxes/:sandboxID/timeout", SetSandboxTimeout);
 
-	openapi.get("/v2/sandboxes", ListSandboxes);
+	openapi.get("/v2/sandboxes", ListSandboxesFiltered);
 	openapi.post("/v2/sandboxes", CreateSandbox);
 	openapi.post("/v2/sandboxes/:sandboxID/connect", ConnectSandbox);
 }

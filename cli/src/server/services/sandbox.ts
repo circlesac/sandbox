@@ -1,5 +1,6 @@
 import { config } from "../config.ts";
 import { NotFoundError, UnsupportedError } from "../errors.ts";
+import { nanoid } from "nanoid";
 import { generateAccessToken, generateSandboxId } from "../lib/id.ts";
 import type { SandboxInfo } from "../types.ts";
 import {
@@ -116,8 +117,12 @@ export class SandboxService {
 					p.lifecycle.secure,
 					p.accessToken,
 				),
-				envVars: req.envVars,
+				envVars: {
+					...(await p.backend.imageEnv?.(p.sandboxId)),
+					...req.envVars,
+				},
 			});
+			await p.backend.runTemplateStart?.(p.sandboxId);
 		} catch (err) {
 			await p.backend.removeContainer(p.sandboxId).catch(() => {});
 			this._sandboxPlatform.delete(p.sandboxId);
@@ -296,6 +301,7 @@ export class SandboxService {
 				info.lifecycle.secure,
 				info.accessToken,
 			),
+			envVars: await backend.imageEnv?.(sandboxId),
 		});
 		registerToken(info.accessToken, sandboxId);
 
@@ -346,6 +352,132 @@ export class SandboxService {
 		return resume;
 	}
 
+	/**
+	 * Saves a sandbox's filesystem as a template that Sandbox.create() accepts.
+	 * Memory is not captured: a sandbox created from it starts its processes anew.
+	 */
+	async snapshot(sandboxId: string, opts: { name?: string; memory?: boolean }) {
+		const found = await this.locate(sandboxId);
+		if (!found) throw new NotFoundError(`Sandbox ${sandboxId} not found`);
+		const { backend } = found;
+		if (!backend.commitTemplate) {
+			throw new UnsupportedError(
+				`Snapshots are not supported by the ${backend.type} backend`,
+			);
+		}
+		if (opts.memory === true) {
+			throw new UnsupportedError(
+				"Memory snapshots are not supported; a snapshot keeps only the filesystem",
+			);
+		}
+		const snapshotID = opts.name ?? `snapshot-${nanoid(10).toLowerCase()}`;
+		if (!/^[a-z0-9][a-z0-9._-]{0,127}$/.test(snapshotID)) {
+			throw new UnsupportedError(
+				`Snapshot name "${snapshotID}" must be lowercase letters, digits, ".", "_" or "-"`,
+			);
+		}
+		await backend.commitTemplate(sandboxId, snapshotID, {
+			"e2b.snapshot": "true",
+			"e2b.snapshot-of": sandboxId,
+		});
+		return { snapshotID, names: [snapshotID] };
+	}
+
+	/**
+	 * Forks a sandbox: saves its filesystem and starts count sandboxes from it
+	 * with the same lifecycle and metadata. Memory and running processes are
+	 * not carried over. Each result holds the sandbox or the error that
+	 * stopped it.
+	 */
+	async fork(
+		sandboxId: string,
+		opts: { timeout?: number; count?: number },
+		ctx: RequestContext = {},
+	) {
+		const count = opts.count ?? 1;
+		if (!Number.isInteger(count) || count < 1 || count > 100) {
+			throw new UnsupportedError("count must be an integer from 1 to 100");
+		}
+		const found = await this.locate(sandboxId);
+		if (!found) throw new NotFoundError(`Sandbox ${sandboxId} not found`);
+		const { info, backend } = found;
+		if (!backend.commitTemplate) {
+			throw new UnsupportedError(
+				`Forks are not supported by the ${backend.type} backend`,
+			);
+		}
+
+		const forkTemplate = `fork-${nanoid(10).toLowerCase()}`;
+		await backend.commitTemplate(sandboxId, forkTemplate, {
+			"e2b.fork-of": sandboxId,
+		});
+		const { lifecycle } = info;
+		const request: CreateRequest = {
+			templateID: forkTemplate,
+			timeout: opts.timeout ?? info.timeoutSec,
+			metadata: info.metadata,
+			autoPause: lifecycle.autoPause,
+			autoPauseMemory: lifecycle.keepMemory,
+			autoResume: { enabled: lifecycle.autoResume },
+			secure: lifecycle.secure,
+			network: { allowPublicTraffic: lifecycle.trafficAccessToken === null },
+		};
+		try {
+			const results = [];
+			for (let i = 0; i < count; i++) {
+				try {
+					results.push({ sandbox: await this.create(request, ctx) });
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					results.push({ error: { code: 500, message } });
+				}
+			}
+			return results;
+		} finally {
+			// The forks keep the image's layers; only the temporary name goes.
+			await backend
+				.removeTemplateImages?.([`sandbox-${forkTemplate}:latest`])
+				.catch(() => 0);
+		}
+	}
+
+	/**
+	 * The sandbox's current resource use, read from envd's /metrics. This
+	 * server keeps no history, so the list holds one sample, or none while
+	 * the sandbox is paused.
+	 */
+	async metrics(sandboxId: string) {
+		const found = await this.locate(sandboxId);
+		if (!found) throw new NotFoundError(`Sandbox ${sandboxId} not found`);
+		const { info, backend } = found;
+		if (info.state !== "running") return [];
+		const target = await backend.resolveTarget(sandboxId, config.envdPort);
+		if (!target) return [];
+		const res = await fetch(`http://${target.host}:${target.port}/metrics`, {
+			headers: { "X-Access-Token": info.accessToken },
+		});
+		if (!res.ok) {
+			throw new UnsupportedError(
+				`envd in sandbox ${sandboxId} does not report metrics (HTTP ${res.status})`,
+			);
+		}
+		const m = (await res.json()) as Record<string, number>;
+		const ts = m.ts ?? Math.floor(Date.now() / 1000);
+		return [
+			{
+				timestamp: new Date(ts * 1000).toISOString(),
+				timestampUnix: ts,
+				cpuCount: m.cpu_count ?? 0,
+				cpuUsedPct: m.cpu_used_pct ?? 0,
+				memUsed: m.mem_used ?? 0,
+				memTotal: m.mem_total ?? 0,
+				memCache: m.mem_cache ?? 0,
+				diskUsed: m.disk_used ?? 0,
+				diskTotal: m.disk_total ?? 0,
+			},
+		];
+	}
+
 	async setTimeout(sandboxId: string, timeoutSec: number): Promise<void> {
 		const found = await this.locate(sandboxId);
 		if (!found) {
@@ -381,16 +513,35 @@ export class SandboxService {
 		return sandboxes.length;
 	}
 
-	async list(filters?: { state?: string; metadata?: Record<string, string> }) {
-		const state =
-			filters?.state === "running" || filters?.state === "paused"
-				? filters.state
-				: undefined;
-
-		const results = await Promise.all(
-			this.allBackends.map((b) => b.listSandboxes({ state })),
+	/** Sandboxes matching every given state and metadata pair, oldest first. */
+	async list(
+		filters: {
+			state?: string | string[];
+			metadata?: Record<string, string>;
+		} = {},
+	) {
+		const states = new Set(
+			[filters.state ?? []]
+				.flat()
+				.filter((s) => s === "running" || s === "paused"),
 		);
-		return results.flat().map((info) => this.detail(info));
+		const results = await Promise.all(
+			this.allBackends.map((b) => b.listSandboxes()),
+		);
+		return results
+			.flat()
+			.filter((info) => states.size === 0 || states.has(info.state))
+			.filter((info) =>
+				Object.entries(filters.metadata ?? {}).every(
+					([key, value]) => info.metadata?.[key] === value,
+				),
+			)
+			.sort(
+				(a, b) =>
+					a.createdAt.localeCompare(b.createdAt) ||
+					a.sandboxId.localeCompare(b.sandboxId),
+			)
+			.map((info) => this.detail(info));
 	}
 }
 

@@ -171,7 +171,7 @@ describe("SandboxService", () => {
 			expect(envd.waitForHealth).toHaveBeenCalledWith(40000);
 			expect(envd.init).toHaveBeenCalledWith(40000, {
 				accessToken: result.envdAccessToken,
-				envVars: undefined,
+				envVars: {},
 			});
 		});
 
@@ -206,7 +206,7 @@ describe("SandboxService", () => {
 			expect(result.envdAccessToken).toBeNull();
 			expect(envd.init).toHaveBeenCalledWith(40000, {
 				accessToken: undefined,
-				envVars: undefined,
+				envVars: {},
 			});
 		});
 

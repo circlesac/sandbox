@@ -50,6 +50,22 @@ export interface ContainerBackend {
 		opts?: { keepMemory?: boolean },
 	): Promise<boolean>;
 
+	/** Optional: save a sandbox's filesystem as a template image. */
+	commitTemplate?(
+		sandboxId: string,
+		templateId: string,
+		labels: Record<string, string>,
+	): Promise<void>;
+
+	/** Optional: remove template images by reference. */
+	removeTemplateImages?(refs: string[]): Promise<number>;
+
+	/** Optional: environment variables the sandbox's image defines. */
+	imageEnv?(sandboxId: string): Promise<Record<string, string>>;
+
+	/** Optional: run a built template's start command and wait until it is ready. */
+	runTemplateStart?(sandboxId: string): Promise<void>;
+
 	/** Resolves a port inside a running sandbox to an address the server can reach. */
 	resolveTarget(sandboxId: string, port: number): Promise<ProxyTarget | null>;
 

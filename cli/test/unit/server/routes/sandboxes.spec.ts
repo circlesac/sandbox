@@ -350,4 +350,87 @@ describe("sandbox controllers", () => {
 			expect(service.pause).toHaveBeenLastCalledWith("sbx-test123", false);
 		});
 	});
+
+	describe("GET /v2/sandboxes filters and pages", () => {
+		const listed = (n: number) =>
+			Array.from({ length: n }, (_, i) => ({ sandboxID: `sbx-${i}` }));
+
+		it("passes repeated or comma-separated state and URL-encoded metadata", async () => {
+			vi.mocked(service.list).mockResolvedValueOnce([]);
+			await app.request(
+				`/v2/sandboxes?state=running,paused&metadata=${encodeURIComponent("team=a&env=dev")}`,
+			);
+			expect(service.list).toHaveBeenCalledWith({
+				state: ["running", "paused"],
+				metadata: { team: "a", env: "dev" },
+			});
+		});
+
+		it("returns limit items and an x-next-token until the list is exhausted", async () => {
+			vi.mocked(service.list).mockResolvedValue(listed(5) as never);
+			const first = await app.request("/v2/sandboxes?limit=2");
+			expect(((await first.json()) as unknown[]).length).toBe(2);
+			const token = first.headers.get("x-next-token");
+			expect(token).toBeTruthy();
+
+			const second = await app.request(
+				`/v2/sandboxes?limit=2&nextToken=${token}`,
+			);
+			expect(await second.json()).toEqual([
+				{ sandboxID: "sbx-2" },
+				{ sandboxID: "sbx-3" },
+			]);
+			const third = await app.request(
+				`/v2/sandboxes?limit=2&nextToken=${second.headers.get("x-next-token")}`,
+			);
+			expect(await third.json()).toEqual([{ sandboxID: "sbx-4" }]);
+			expect(third.headers.get("x-next-token")).toBeNull();
+		});
+	});
+
+	describe("PUT /sandboxes/:sandboxID/network", () => {
+		const put = (body: unknown) =>
+			app.request("/sandboxes/sbx-test123/network", {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+
+		it("accepts a request that changes nothing", async () => {
+			expect(
+				(await put({ allow_internet_access: true, allowOut: [] })).status,
+			).toBe(204);
+		});
+
+		it("rejects egress rules and names them", async () => {
+			const res = await put({
+				allow_internet_access: false,
+				denyOut: ["0.0.0.0/0"],
+			});
+			expect(res.status).toBe(400);
+			const json = (await res.json()) as Record<string, unknown>;
+			expect(json.message).toMatch(/allow_internet_access, denyOut/);
+		});
+
+		it("returns 404 for an unknown sandbox", async () => {
+			vi.mocked(service.getInfo).mockResolvedValueOnce(null);
+			expect((await put({})).status).toBe(404);
+		});
+	});
+
+	describe("GET /sandboxes/metrics", () => {
+		it("returns the latest sample of each known sandbox", async () => {
+			const sample = { cpuCount: 2 };
+			(service as unknown as { metrics: ReturnType<typeof vi.fn> }).metrics =
+				vi.fn(async (id: string) => {
+					if (id === "sbx-gone") throw new NotFoundError("gone");
+					return [sample];
+				});
+			const res = await app.request(
+				"/sandboxes/metrics?sandbox_ids=sbx-a,sbx-gone",
+			);
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ sandboxes: { "sbx-a": sample } });
+		});
+	});
 });

@@ -20,12 +20,37 @@ import { LEGACY_LIFECYCLE, type SandboxLifecycle } from "./lifecycle.ts";
 
 const REGISTRY = "ghcr.io/circlesac";
 
+/**
+ * A template ID is `name` or `name:tag`; its image is `sandbox-<name>:<tag>`,
+ * with `latest` when no tag is given.
+ */
+export function templateImage(templateId: string): {
+	repo: string;
+	tag: string;
+} {
+	const colon = templateId.lastIndexOf(":");
+	const name = colon === -1 ? templateId : templateId.slice(0, colon);
+	const tag = colon === -1 ? "latest" : templateId.slice(colon + 1);
+	return { repo: `sandbox-${name}`, tag };
+}
+
 function localImageName(templateId: string) {
-	return `sandbox-${templateId}:latest`;
+	const { repo, tag } = templateImage(templateId);
+	return `${repo}:${tag}`;
 }
 
 function registryImageName(templateId: string) {
-	return `${REGISTRY}/sandbox-${templateId}:latest`;
+	const { repo, tag } = templateImage(templateId);
+	return `${REGISTRY}/${repo}:${tag}`;
+}
+
+/** A template image this server built, committed, or pulled. */
+export interface TemplateImage {
+	/** `sandbox-<name>:<tag>` */
+	ref: string;
+	id: string;
+	createdAt: string;
+	labels: Record<string, string>;
 }
 
 interface DockerTimeoutState {
@@ -107,6 +132,176 @@ export class DockerService implements ContainerBackend {
 				`Prefetching template "${templateId}" failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		});
+	}
+
+	/** Saves a container's filesystem as a template image (docker commit). */
+	async commitTemplate(
+		sandboxId: string,
+		templateId: string,
+		labels: Record<string, string>,
+	): Promise<void> {
+		const { repo, tag } = templateImage(templateId);
+		await this.docker.getContainer(sandboxId).commit({
+			repo,
+			tag,
+			pause: true,
+			changes: Object.entries(labels).map(
+				([key, value]) => `LABEL ${key}=${JSON.stringify(value)}`,
+			),
+		});
+	}
+
+	/** Lists template images, optionally only those carrying a label. */
+	async listTemplateImages(label?: string): Promise<TemplateImage[]> {
+		const images = await this.docker.listImages(
+			label ? { filters: { label: [label] } } : {},
+		);
+		return images.flatMap((image) =>
+			(image.RepoTags ?? [])
+				.filter((ref) => ref.startsWith("sandbox-"))
+				.map((ref) => ({
+					ref,
+					id: image.Id,
+					createdAt: new Date(image.Created * 1000).toISOString(),
+					labels: image.Labels ?? {},
+				})),
+		);
+	}
+
+	async templateExists(templateId: string): Promise<boolean> {
+		return this.imageExists(localImageName(templateId));
+	}
+
+	async tagTemplate(sourceTemplateId: string, tags: string[]): Promise<string> {
+		const source = this.docker.getImage(localImageName(sourceTemplateId));
+		const info = await source.inspect();
+		const { repo } = templateImage(sourceTemplateId);
+		for (const tag of tags) await source.tag({ repo, tag });
+		return info.Id;
+	}
+
+	/** Removes image tags; returns how many existed. */
+	async removeTemplateImages(refs: string[]): Promise<number> {
+		let removed = 0;
+		for (const ref of refs) {
+			try {
+				await this.docker.getImage(ref).remove({ force: true });
+				removed++;
+			} catch (err: unknown) {
+				if (!isDockerNotFound(err)) throw err;
+			}
+		}
+		return removed;
+	}
+
+	/** Builds `sandbox-<templateId>` from a directory holding a Dockerfile. */
+	async buildTemplate(
+		contextDir: string,
+		entries: string[],
+		templateId: string,
+		opts: { noCache: boolean; onLog: (line: string, isError: boolean) => void },
+	): Promise<void> {
+		const stream = await this.docker.buildImage(
+			{ context: contextDir, src: entries },
+			{ t: localImageName(templateId), nocache: opts.noCache, forcerm: true },
+		);
+		await new Promise<void>((resolve, reject) => {
+			this.docker.modem.followProgress(
+				stream,
+				(err: Error | null) => (err ? reject(err) : resolve()),
+				(event: { stream?: string; error?: string }) => {
+					if (event.error) opts.onLog(event.error, true);
+					for (const line of (event.stream ?? "").split("\n")) {
+						if (line.trim()) opts.onLog(line, false);
+					}
+				},
+			);
+		});
+	}
+
+	/** The start and ready commands a template recorded, from its image labels. */
+	async templateCommands(
+		sandboxId: string,
+	): Promise<{ startCmd?: string; readyCmd?: string }> {
+		const info = await this.docker.getContainer(sandboxId).inspect();
+		const labels = info.Config.Labels ?? {};
+		return {
+			startCmd: labels["e2b.start-cmd"] || undefined,
+			readyCmd: labels["e2b.ready-cmd"] || undefined,
+		};
+	}
+
+	/**
+	 * Environment variables baked into the sandbox's image (template ENV steps,
+	 * and a forked or snapshotted sandbox's own variables). envd does not pass
+	 * its environment to the processes it starts, so they go to /init.
+	 */
+	async imageEnv(sandboxId: string): Promise<Record<string, string>> {
+		const info = await this.docker.getContainer(sandboxId).inspect();
+		const env: Record<string, string> = {};
+		for (const entry of info.Config.Env ?? []) {
+			const eq = entry.indexOf("=");
+			const key = eq === -1 ? entry : entry.slice(0, eq);
+			if (key === "HOSTNAME" || key === "HOME") continue;
+			env[key] = eq === -1 ? "" : entry.slice(eq + 1);
+		}
+		return env;
+	}
+
+	/**
+	 * Starts a built template's start command and waits for its ready command
+	 * to succeed, within the same budget as envd's health check.
+	 */
+	async runTemplateStart(sandboxId: string): Promise<void> {
+		const { startCmd, readyCmd } = await this.templateCommands(sandboxId);
+		if (startCmd) {
+			await this.exec(sandboxId, startCmd, {
+				user: config.defaultUser,
+				detach: true,
+			});
+		}
+		if (!readyCmd) return;
+		const deadline = Date.now() + config.envdHealthTimeoutMs;
+		while (Date.now() < deadline) {
+			const code = await this.exec(sandboxId, readyCmd, {
+				user: config.defaultUser,
+				detach: false,
+			});
+			if (code === 0) return;
+			await new Promise((r) => setTimeout(r, config.envdHealthIntervalMs));
+		}
+		throw new Error(
+			`The template's ready command did not succeed within ${config.envdHealthTimeoutMs} ms: ${readyCmd}`,
+		);
+	}
+
+	/**
+	 * Runs a shell command in a sandbox as a user. Detached commands return at
+	 * once with exit code null; others wait and return their exit code.
+	 */
+	async exec(
+		sandboxId: string,
+		cmd: string,
+		opts: { user: string; detach: boolean },
+	): Promise<number | null> {
+		const exec = await this.docker.getContainer(sandboxId).exec({
+			Cmd: ["/bin/sh", "-c", cmd],
+			User: opts.user,
+			AttachStdout: !opts.detach,
+			AttachStderr: !opts.detach,
+		});
+		if (opts.detach) {
+			await exec.start({ Detach: true });
+			return null;
+		}
+		const stream = await exec.start({});
+		await new Promise<void>((resolve) => {
+			stream.on("end", resolve);
+			stream.on("close", resolve);
+			stream.on("error", () => resolve());
+			stream.resume();
+		});
+		return (await exec.inspect()).ExitCode ?? null;
 	}
 
 	private async imageExists(name: string): Promise<boolean> {
