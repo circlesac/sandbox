@@ -189,26 +189,43 @@ export class TemplateService {
 			}));
 	}
 
-	/** Snapshot templates, optionally only those taken from one sandbox. */
-	async listSnapshots(sandboxId?: string) {
+	/**
+	 * Snapshot templates as E2B lists them, one per tag (<name>:<tag>),
+	 * optionally only those from one sandbox or with one name (a name with a
+	 * tag matches that tag only).
+	 */
+	async listSnapshots(sandboxId?: string, name?: string) {
 		const images = await this.docker.listTemplateImages("e2b.snapshot=true");
 		return images
-			.filter((image) => image.ref.endsWith(":latest"))
 			.filter(
 				(image) => !sandboxId || image.labels["e2b.snapshot-of"] === sandboxId,
 			)
 			.map((image) => {
-				const name = image.ref.slice("sandbox-".length, -":latest".length);
-				return { snapshotID: name, names: [name] };
-			});
+				const snapshotID = image.ref.slice("sandbox-".length);
+				return { snapshotID, names: [snapshotID.split(":")[0] ?? snapshotID] };
+			})
+			.filter(
+				(snap) =>
+					!name ||
+					(name.includes(":")
+						? snap.snapshotID === name
+						: snap.names[0] === name),
+			);
 	}
 
-	/** Deletes every tag of a template (or snapshot); false when none existed. */
+	/**
+	 * Deletes a template or snapshot: with a tag (<name>:<tag>) only that tag,
+	 * without one every tag. False when nothing matched.
+	 */
 	async deleteTemplate(templateID: string): Promise<boolean> {
-		const { repo } = templateImage(templateID);
+		const { repo, tag } = templateImage(templateID);
 		const refs = (await this.docker.listTemplateImages())
 			.map((image) => image.ref)
-			.filter((ref) => ref.startsWith(`${repo}:`));
+			.filter((ref) =>
+				templateID.includes(":")
+					? ref === `${repo}:${tag}`
+					: ref.startsWith(`${repo}:`),
+			);
 		return (await this.docker.removeTemplateImages(refs)) > 0;
 	}
 

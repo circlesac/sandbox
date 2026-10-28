@@ -162,7 +162,7 @@ bun run smoke:pty
 | Feature | Docker | Tart (macOS) | Shuru |
 | --- | --- | --- | --- |
 | Create, commands, PTY, files | Yes | Yes | Yes |
-| `secure` (envd access token) | Enforced by envd | Enforced by envd-lite and the control plane | Enforced by the control plane |
+| envd access token (every sandbox is secure; `secure: false` is ignored, as in E2B) | Enforced by envd | Enforced by envd-lite and the control plane | Enforced by the control plane |
 | Timeout kills the sandbox (E2B default) | Yes | Yes | Yes |
 | `onTimeout: "pause"` / `Sandbox.pause()`, keeping memory | Yes (container frozen) | Yes (VM suspended); where the host cannot save VM state, the VM stops and keeps only its disk | 400 |
 | Filesystem-only pause (`autoPauseMemory: false`, `memory: false`) | Yes (container stopped) | 400 | 400 |
@@ -171,8 +171,8 @@ bun run smoke:pty
 | `network.allowPublicTraffic: false` | Yes | Yes | Yes |
 | Egress rules, `allowInternetAccess: false`, `maskRequestHost` | 400 | 400 | 400 |
 | Template builds, tags, aliases, delete | Yes (Docker image builds) | Templates are Docker images, so they start on Docker only | 400 when Shuru is the Linux backend |
-| Snapshots | Filesystem only | 400 | 400 |
-| `Sandbox.fork()` | Filesystem only; processes start anew | 400 | 400 |
+| Snapshots (IDs are `<name>:<tag>`, tag `default`) | Filesystem only | 400 | 400 |
+| `Sandbox.fork()` (15 s default timeout, 409 for a paused sandbox) | Filesystem only; processes start anew | 400 | 400 |
 | Metrics | Current sample, no history | Current sample, no history | Current sample, no history |
 | MCP gateway, IAM tokens, volume mounts | 400 | 400 | 400 |
 | Volumes and secrets APIs | 501 | 501 | 501 |

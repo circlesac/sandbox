@@ -387,7 +387,9 @@ export class DockerService implements ContainerBackend {
 	async createContainer(
 		opts: CreateContainerOpts,
 	): Promise<{ instanceId: string; hostPort: number }> {
-		const image = await this.resolveImage(opts.templateId);
+		const image = await this.resolveImage(
+			opts.imageTemplateId ?? opts.templateId,
+		);
 
 		const labels: Record<string, string> = {
 			"e2b.sandbox-id": opts.sandboxId,

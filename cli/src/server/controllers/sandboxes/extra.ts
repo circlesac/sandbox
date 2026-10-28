@@ -30,7 +30,12 @@ function listFilters(c: Context) {
 	const metadata = raw
 		? Object.fromEntries(new URLSearchParams(raw))
 		: undefined;
-	return { state, metadata };
+	return {
+		state,
+		metadata,
+		template: c.req.query("template"),
+		startedAfter: c.req.query("startedAfter"),
+	};
 }
 
 /** Pages through a list with an opaque offset token, as E2B's x-next-token. */
@@ -111,6 +116,7 @@ export const ListSnapshots = endpoint(
 		request: {
 			query: z.object({
 				sandboxID: z.string().optional(),
+				name: z.string().optional().describe("Name, optionally with :<tag>"),
 				limit: z.string().optional(),
 				nextToken: z.string().optional(),
 			}),
@@ -120,7 +126,10 @@ export const ListSnapshots = endpoint(
 	async (c) => {
 		if (!templates)
 			throw new UnsupportedError("Snapshots need the Docker backend");
-		const all = await templates.listSnapshots(c.req.query("sandboxID"));
+		const all = await templates.listSnapshots(
+			c.req.query("sandboxID"),
+			c.req.query("name"),
+		);
 		return c.json(page(c, all), 200);
 	},
 );
@@ -238,6 +247,34 @@ export const UpdateNetwork = endpoint(
 	},
 );
 
+export const RefreshSandbox = endpoint(
+	{
+		tags,
+		summary: "Extend a running sandbox's time to live",
+		request: {
+			params: SandboxIdParamSchema,
+			body: {
+				content: {
+					"application/json": {
+						schema: z.object({ duration: z.number().optional() }),
+					},
+				},
+			},
+		},
+		responses: { 204: { description: "Refreshed" } },
+	},
+	async (c) => {
+		const body = (await c.req.json().catch(() => ({}))) as {
+			duration?: number;
+		};
+		await sandboxes.refresh(
+			c.req.param("sandboxID") ?? "",
+			body.duration ?? 60,
+		);
+		return c.body(null, 204);
+	},
+);
+
 /** Registers the endpoints beyond the core lifecycle. */
 export function registerExtraSandboxRoutes(
 	openapi: ReturnType<typeof fromHono>,
@@ -248,4 +285,5 @@ export function registerExtraSandboxRoutes(
 	openapi.post("/sandboxes/:sandboxID/fork", ForkSandbox);
 	openapi.get("/sandboxes/:sandboxID/metrics", SandboxMetrics);
 	openapi.put("/sandboxes/:sandboxID/network", UpdateNetwork);
+	openapi.post("/sandboxes/:sandboxID/refreshes", RefreshSandbox);
 }

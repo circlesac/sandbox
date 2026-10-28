@@ -1,6 +1,11 @@
 import { OpenAPIRoute, type OpenAPIRouteSchema } from "chanfana";
 import type { Context } from "hono";
-import { NotFoundError, RetryableError, UnsupportedError } from "../errors.ts";
+import {
+	ConflictError,
+	NotFoundError,
+	RetryableError,
+	UnsupportedError,
+} from "../errors.ts";
 
 /** The host the client used, so the SDK's getHost() builds URLs back to this server. */
 export function requestContext(c: Context) {
@@ -25,6 +30,9 @@ export function errorResponse(c: Context, err: unknown) {
 			{ code: 400, error: "unsupported", message: err.message },
 			400,
 		);
+	}
+	if (err instanceof ConflictError) {
+		return c.json({ code: 409, error: "conflict", message: err.message }, 409);
 	}
 	if (err instanceof RetryableError) {
 		c.header("Retry-After", String(err.retryAfterSec));

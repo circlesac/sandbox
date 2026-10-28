@@ -6,6 +6,7 @@ import type {
 } from "../../../../src/server/services/backend.ts";
 import type { EnvdService } from "../../../../src/server/services/envd.ts";
 import { LEGACY_LIFECYCLE } from "../../../../src/server/services/lifecycle.ts";
+import { ConflictError } from "../../../../src/server/errors.ts";
 import {
 	NotFoundError,
 	SandboxService,
@@ -195,9 +196,11 @@ describe("SandboxService", () => {
 			expect(backend.sandboxes.size).toBe(0);
 		});
 
-		it("clamps the timeout to maxTimeoutSec", async () => {
-			const { sandboxID } = await service.create({ timeout: 99999 });
-			expect(backend.sandboxes.get(sandboxID)?.timeoutSec).toBe(3600);
+		it("rejects a timeout beyond maxTimeoutSec, as E2B does", async () => {
+			await expect(service.create({ timeout: 99999 })).rejects.toThrow(
+				/timeout must be at most 3600 seconds/,
+			);
+			expect(backend.sandboxes.size).toBe(0);
 		});
 
 		it("records the lifecycle the request asked for", async () => {
@@ -213,11 +216,11 @@ describe("SandboxService", () => {
 			});
 		});
 
-		it("does not give envd a token, or the client one, when secure is false", async () => {
+		it("ignores secure: false and secures the sandbox anyway, as E2B does", async () => {
 			const result = await service.create({ secure: false });
-			expect(result.envdAccessToken).toBeNull();
-			expect(envd.init).toHaveBeenCalledWith(40000, {
-				accessToken: undefined,
+			expect(result.envdAccessToken).toBeTruthy();
+			expect(envd.init).toHaveBeenLastCalledWith(40000, {
+				accessToken: result.envdAccessToken,
 				envVars: {},
 			});
 		});
@@ -387,6 +390,46 @@ describe("SandboxService", () => {
 		});
 	});
 
+	describe("pause conflicts", () => {
+		it("shares concurrent pauses, then rejects pausing a paused sandbox", async () => {
+			const { sandboxID } = await service.create({});
+			const results = await Promise.all([
+				service.pause(sandboxID),
+				service.pause(sandboxID),
+				service.pause(sandboxID),
+			]);
+			expect(results).toEqual([true, true, true]);
+			expect(backend.events.filter((e) => e.startsWith("frozen"))).toHaveLength(
+				1,
+			);
+			await expect(service.pause(sandboxID)).rejects.toBeInstanceOf(
+				ConflictError,
+			);
+		});
+
+		it("rejects changing the timeout of a paused sandbox", async () => {
+			const { sandboxID } = await service.create({});
+			await service.pause(sandboxID);
+			await expect(service.setTimeout(sandboxID, 60)).rejects.toBeInstanceOf(
+				ConflictError,
+			);
+		});
+	});
+
+	describe("refresh", () => {
+		it("extends to the requested duration but never shortens", async () => {
+			const { sandboxID } = await service.create({ timeout: 60 });
+			await service.refresh(sandboxID, 30);
+			expect(backend.get(sandboxID).timeoutSec).toBe(60);
+			await service.refresh(sandboxID, 120);
+			expect(backend.get(sandboxID).timeoutSec).toBe(120);
+			await vi.advanceTimersByTimeAsync(119_999);
+			expect(backend.stateOf(sandboxID)).toBe("running");
+			await vi.advanceTimersByTimeAsync(1);
+			expect(backend.stateOf(sandboxID)).toBe("removed");
+		});
+	});
+
 	describe("connect", () => {
 		it("resumes a paused sandbox, re-initializes envd, and starts a new timeout", async () => {
 			const { sandboxID } = await service.create({
@@ -404,6 +447,21 @@ describe("SandboxService", () => {
 			expect(backend.stateOf(sandboxID)).toBe("running");
 			await vi.advanceTimersByTimeAsync(1);
 			expect(backend.stateOf(sandboxID)).toBe("frozen");
+		});
+
+		it("leaves a running sandbox's end time exactly as it was for a shorter request", async () => {
+			const { sandboxID } = await service.create({ timeout: 100 });
+			const before = (await service.getInfo(sandboxID))?.endAt;
+			await vi.advanceTimersByTimeAsync(1_234);
+			await service.connect(sandboxID, 10);
+			expect((await service.getInfo(sandboxID))?.endAt).toBe(before);
+		});
+
+		it("rejects a connect timeout beyond the maximum", async () => {
+			const { sandboxID } = await service.create({});
+			await expect(service.connect(sandboxID, 99999)).rejects.toThrow(
+				/at most/,
+			);
 		});
 
 		it("never shortens a running sandbox's remaining time", async () => {

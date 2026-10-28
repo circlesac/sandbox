@@ -55,7 +55,7 @@ describe.skipIf(!opts)(
 			await source.files.write("/home/user/note.txt", "kept in the snapshot");
 			const snapshot = await source.createSnapshot({ name: `snap-${run}` });
 			templateNames.push(snapshot.snapshotId);
-			expect(snapshot.snapshotId).toBe(`snap-${run}`);
+			expect(snapshot.snapshotId).toBe(`snap-${run}:default`);
 
 			const listed = await Sandbox.listSnapshots(opts).nextItems();
 			expect(listed.map((s) => s.snapshotId)).toContain(snapshot.snapshotId);

@@ -193,9 +193,13 @@ export class PauseSandbox extends OpenAPIRoute {
 				);
 			return c.body(null, 204);
 		} catch (err) {
-			if (err instanceof UnsupportedError)
+			// A backend that cannot pause at all answers 501, as before.
+			if (
+				err instanceof UnsupportedError &&
+				/not supported by/.test(err.message)
+			)
 				return c.json({ error: "unsupported", message: err.message }, 501);
-			throw err;
+			return errorResponse(c, err);
 		}
 	}
 }
@@ -350,9 +354,7 @@ export class SetSandboxTimeout extends OpenAPIRoute {
 			await sandboxService.setTimeout(id, body.timeout);
 			return c.body(null, 204);
 		} catch (err) {
-			if (err instanceof NotFoundError)
-				return c.json({ error: "not_found", message: err.message }, 404);
-			throw err;
+			return errorResponse(c, err);
 		}
 	}
 }

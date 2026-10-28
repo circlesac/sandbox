@@ -15,6 +15,8 @@ export interface CreateContainerOpts {
 	envVars?: Record<string, string>;
 	metadata?: Record<string, string>;
 	lifecycle: SandboxLifecycle;
+	/** Start from this template's image while reporting templateId (forks). */
+	imageTemplateId?: string;
 }
 
 /** Where to send a request for a sandbox port. */

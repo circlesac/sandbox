@@ -109,7 +109,8 @@ export function lifecycleFromCreate(
 		autoPause,
 		keepMemory,
 		autoResume,
-		secure: req.secure !== false,
+		// E2B secures every sandbox and ignores `secure: false` from v1 clients.
+		secure: true,
 		trafficAccessToken:
 			allowPublicTraffic === false ? generateAccessToken() : null,
 	};

@@ -1,5 +1,5 @@
 import { config } from "../config.ts";
-import { NotFoundError, UnsupportedError } from "../errors.ts";
+import { ConflictError, NotFoundError, UnsupportedError } from "../errors.ts";
 import {
 	E2B_CLIENT_ID,
 	generateAccessToken,
@@ -21,6 +21,8 @@ import type { TtlService } from "./ttl.ts";
 
 export interface CreateRequest extends CreateOptions {
 	templateID?: string;
+	/** Internal: the image to start from when it differs from templateID (forks). */
+	imageTemplateID?: string;
 	timeout?: number;
 	timeoutSec?: number;
 	envVars?: Record<string, string>;
@@ -36,6 +38,8 @@ export class SandboxService {
 	// Track which platform each sandbox belongs to
 	private _sandboxPlatform = new Map<string, Platform>();
 	private resumes = new Map<string, Promise<boolean>>();
+	private pauses = new Map<string, Promise<boolean>>();
+	private connects = new Map<string, Promise<void>>();
 
 	constructor(
 		private backends: BackendMap,
@@ -99,9 +103,8 @@ export class SandboxService {
 			sandboxId: generateSandboxId(),
 			accessToken: generateAccessToken(),
 			templateId: req.templateID ?? "base",
-			timeoutSec: Math.min(
+			timeoutSec: this.timeoutWithinLimit(
 				req.timeoutSec ?? req.timeout ?? config.defaultTimeoutSec,
-				config.maxTimeoutSec,
 			),
 			platform,
 			backend,
@@ -117,6 +120,7 @@ export class SandboxService {
 			sandboxId: p.sandboxId,
 			accessToken: p.accessToken,
 			templateId: p.templateId,
+			imageTemplateId: req.imageTemplateID,
 			timeoutSec: p.timeoutSec,
 			envVars: req.envVars,
 			metadata: req.metadata,
@@ -146,6 +150,16 @@ export class SandboxService {
 
 		registerToken(p.accessToken, p.sandboxId);
 		this.ttl.start(p.sandboxId, p.timeoutSec, () => this.expire(p.sandboxId));
+	}
+
+	/** A requested timeout, rejected beyond the maximum as E2B rejects it. */
+	private timeoutWithinLimit(timeoutSec: number): number {
+		if (timeoutSec > config.maxTimeoutSec) {
+			throw new UnsupportedError(
+				`timeout must be at most ${config.maxTimeoutSec} seconds`,
+			);
+		}
+		return timeoutSec;
 	}
 
 	/** The token envd is given; the proxy also checks it for backends whose envd does not. */
@@ -257,6 +271,8 @@ export class SandboxService {
 			).toISOString(),
 			metadata: info.metadata,
 			state: info.state,
+			// E2B's template alias: the name the sandbox was created from.
+			alias: info.templateId.split(":")[0],
 			envdAccessToken: info.lifecycle.secure ? info.accessToken : undefined,
 		};
 	}
@@ -278,9 +294,14 @@ export class SandboxService {
 	 */
 	async pause(sandboxId: string, keepMemory = true): Promise<boolean> {
 		sandboxId = await this.canonical(sandboxId);
+		// Concurrent pauses of one sandbox share the first; a pause of a sandbox
+		// that is already paused is a conflict, as in E2B.
 		const found = await this.locate(sandboxId);
+		// Checked after the lookup, so a pause that started meanwhile is shared.
+		const pending = this.pauses.get(sandboxId);
+		if (pending) return pending;
 		if (!found) return false;
-		const { backend } = found;
+		const { backend, info } = found;
 		if (!backend.supportsPause) {
 			throw new UnsupportedError(
 				`Pause is not supported by the ${backend.type} backend`,
@@ -291,9 +312,16 @@ export class SandboxService {
 				`The ${backend.type} backend cannot pause without keeping memory`,
 			);
 		}
-		this.ttl.clear(sandboxId);
-		clearRoutes(sandboxId);
-		return backend.stopContainer(sandboxId, { keepMemory });
+		if (info.state === "paused") {
+			throw new ConflictError(`Sandbox ${sandboxId} is already paused`);
+		}
+		const pause = (async () => {
+			this.ttl.clear(sandboxId);
+			clearRoutes(sandboxId);
+			return backend.stopContainer(sandboxId, { keepMemory });
+		})().finally(() => this.pauses.delete(sandboxId));
+		this.pauses.set(sandboxId, pause);
+		return pause;
 	}
 
 	/** Timeout handler: pause or kill as the sandbox's lifecycle says. */
@@ -318,6 +346,9 @@ export class SandboxService {
 		ctx: RequestContext = {},
 	) {
 		sandboxId = await this.canonical(sandboxId);
+		const requested = this.timeoutWithinLimit(
+			timeoutSec ?? config.defaultTimeoutSec,
+		);
 		const found = await this.locate(sandboxId);
 		if (!found) {
 			throw new NotFoundError(
@@ -326,6 +357,49 @@ export class SandboxService {
 		}
 		const { info, backend } = found;
 
+		// Concurrent connects share one resume.
+		let resuming = this.connects.get(sandboxId);
+		if (!resuming) {
+			resuming = this.startAndInit(sandboxId, info, backend).finally(() =>
+				this.connects.delete(sandboxId),
+			);
+			this.connects.set(sandboxId, resuming);
+		}
+		await resuming;
+
+		// Connecting only ever extends a running sandbox's time; a shorter
+		// request leaves its end time exactly as it was.
+		const remaining =
+			info.state === "running"
+				? (new Date(info.createdAt).getTime() +
+						info.timeoutSec * 1000 -
+						Date.now()) /
+					1000
+				: 0;
+		if (requested > remaining) {
+			await backend.refreshTimeout?.(sandboxId, requested);
+			this.ttl.start(sandboxId, requested, () => this.expire(sandboxId));
+		} else if (info.state !== "running") {
+			this.ttl.start(sandboxId, remaining, () => this.expire(sandboxId));
+		}
+
+		return this.response(
+			{
+				sandboxId: info.sandboxId,
+				templateId: info.templateId,
+				accessToken: info.accessToken,
+				lifecycle: info.lifecycle,
+			},
+			ctx,
+			await this.envdVersionOf(backend, sandboxId),
+		);
+	}
+
+	private async startAndInit(
+		sandboxId: string,
+		info: SandboxInfo,
+		backend: ContainerBackend,
+	): Promise<void> {
 		const { hostPort } = await backend.startContainer(sandboxId);
 		this._sandboxPlatform.set(
 			sandboxId,
@@ -343,33 +417,6 @@ export class SandboxService {
 			envVars: await backend.imageEnv?.(sandboxId),
 		});
 		registerToken(info.accessToken, sandboxId);
-
-		// Connecting only ever extends a running sandbox's remaining time.
-		const requested = Math.min(
-			timeoutSec ?? config.defaultTimeoutSec,
-			config.maxTimeoutSec,
-		);
-		const remaining =
-			info.state === "running"
-				? (new Date(info.createdAt).getTime() +
-						info.timeoutSec * 1000 -
-						Date.now()) /
-					1000
-				: 0;
-		const timeout = Math.max(requested, Math.ceil(remaining));
-		await backend.refreshTimeout?.(sandboxId, timeout);
-		this.ttl.start(sandboxId, timeout, () => this.expire(sandboxId));
-
-		return this.response(
-			{
-				sandboxId: info.sandboxId,
-				templateId: info.templateId,
-				accessToken: info.accessToken,
-				lifecycle: info.lifecycle,
-			},
-			ctx,
-			await this.envdVersionOf(backend, sandboxId),
-		);
 	}
 
 	/**
@@ -415,22 +462,27 @@ export class SandboxService {
 				"Memory snapshots are not supported; a snapshot keeps only the filesystem",
 			);
 		}
-		const snapshotID = opts.name ?? `snapshot-${generateImageSuffix()}`;
-		if (!isImageName(snapshotID)) {
+		// E2B snapshot IDs are template references, <name>:<tag>, the tag
+		// "default" unless the name gives one; names carry no tag.
+		const [name, tag = "default"] = (
+			opts.name ?? `snapshot-${generateImageSuffix()}`
+		).split(":");
+		if (!name || !isImageName(name) || !/^[\w][\w.-]{0,127}$/.test(tag)) {
 			throw new UnsupportedError(
-				`Snapshot name "${snapshotID}" must be lowercase letters, digits, ".", "_" or "-"`,
+				`Snapshot name "${opts.name}" must be a lowercase name, optionally with :<tag>`,
 			);
 		}
+		const snapshotID = `${name}:${tag}`;
 		await backend.commitTemplate(sandboxId, snapshotID, {
 			"e2b.snapshot": "true",
 			"e2b.snapshot-of": sandboxId,
 		});
-		return { snapshotID, names: [snapshotID] };
+		return { snapshotID, names: [name] };
 	}
 
 	/**
-	 * Forks a sandbox: saves its filesystem and starts count sandboxes from it
-	 * with the same lifecycle and metadata. Memory and running processes are
+	 * Forks a running sandbox: saves its filesystem and starts count sandboxes
+	 * from it with the same template, lifecycle, and metadata. Memory and running processes are
 	 * not carried over. Each result holds the sandbox or the error that
 	 * stopped it.
 	 */
@@ -455,6 +507,11 @@ export class SandboxService {
 				`Forks are not supported by the ${backend.type} backend`,
 			);
 		}
+		if (info.state !== "running") {
+			throw new ConflictError(
+				`Sandbox ${sandboxId} is paused; resume it to fork it`,
+			);
+		}
 
 		const forkTemplate = `fork-${generateImageSuffix()}`;
 		await backend.commitTemplate(sandboxId, forkTemplate, {
@@ -462,8 +519,10 @@ export class SandboxService {
 		});
 		const { lifecycle } = info;
 		const request: CreateRequest = {
-			templateID: forkTemplate,
-			timeout: opts.timeout ?? info.timeoutSec,
+			// Forks report the source's template; E2B gives them 15 s by default.
+			templateID: info.templateId,
+			imageTemplateID: forkTemplate,
+			timeout: opts.timeout ?? 15,
 			metadata: info.metadata,
 			autoPause: lifecycle.autoPause,
 			autoPauseMemory: lifecycle.keepMemory,
@@ -533,16 +592,46 @@ export class SandboxService {
 
 	async setTimeout(sandboxId: string, timeoutSec: number): Promise<void> {
 		sandboxId = await this.canonical(sandboxId);
+		const timeout = this.timeoutWithinLimit(timeoutSec);
 		const found = await this.locate(sandboxId);
 		if (!found) {
 			throw new NotFoundError(
 				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
 			);
 		}
+		if (this.pauses.has(sandboxId) || found.info.state !== "running") {
+			throw new ConflictError(`Sandbox ${sandboxId} is paused or pausing`);
+		}
+		await found.backend.refreshTimeout?.(sandboxId, timeout);
+		this.ttl.update(sandboxId, timeout, () => this.expire(sandboxId));
+	}
 
-		const clamped = Math.min(timeoutSec, config.maxTimeoutSec);
-		await found.backend.refreshTimeout?.(sandboxId, clamped);
-		this.ttl.update(sandboxId, clamped, () => this.expire(sandboxId));
+	/**
+	 * Extends a running sandbox to at least `durationSec` from now; never
+	 * shortens it (POST /sandboxes/{id}/refreshes).
+	 */
+	async refresh(sandboxId: string, durationSec: number): Promise<void> {
+		sandboxId = await this.canonical(sandboxId);
+		const duration = this.timeoutWithinLimit(durationSec);
+		const found = await this.locate(sandboxId);
+		if (!found) {
+			throw new NotFoundError(
+				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
+			);
+		}
+		const { info } = found;
+		if (info.state !== "running") {
+			throw new ConflictError(`Sandbox ${sandboxId} is paused`);
+		}
+		const remaining =
+			(new Date(info.createdAt).getTime() +
+				info.timeoutSec * 1000 -
+				Date.now()) /
+			1000;
+		if (duration > remaining) {
+			await found.backend.refreshTimeout?.(sandboxId, duration);
+			this.ttl.update(sandboxId, duration, () => this.expire(sandboxId));
+		}
 	}
 
 	/**
@@ -574,6 +663,8 @@ export class SandboxService {
 		filters: {
 			state?: string | string[];
 			metadata?: Record<string, string>;
+			template?: string;
+			startedAfter?: string;
 		} = {},
 	) {
 		const states = new Set(
@@ -593,6 +684,14 @@ export class SandboxService {
 				Object.entries(filters.metadata ?? {}).every(
 					([key, value]) => info.metadata?.[key] === value,
 				),
+			)
+			.filter(
+				({ info }) => !filters.template || info.templateId === filters.template,
+			)
+			.filter(
+				({ info }) =>
+					!filters.startedAfter ||
+					Date.parse(info.createdAt) > Date.parse(filters.startedAfter),
 			)
 			.sort(
 				({ info: a }, { info: b }) =>

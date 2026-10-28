@@ -22,3 +22,11 @@ export class RetryableError extends Error {
 		this.name = "RetryableError";
 	}
 }
+
+/** The sandbox's state does not allow the request, for example pausing a paused one. */
+export class ConflictError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ConflictError";
+	}
+}
