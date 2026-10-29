@@ -326,12 +326,20 @@ export class DockerService implements ContainerBackend {
 		if (!readyCmd) return;
 		const deadline = Date.now() + config.envdHealthTimeoutMs;
 		while (Date.now() < deadline) {
+			const remaining = deadline - Date.now();
 			const code = await this.exec(sandboxId, readyCmd, {
 				user: config.defaultUser,
 				detach: false,
+				timeoutMs: remaining,
 			});
 			if (code === 0) return;
-			await new Promise((r) => setTimeout(r, config.envdHealthIntervalMs));
+			const waitMs = Math.min(
+				config.envdHealthIntervalMs,
+				deadline - Date.now(),
+			);
+			if (waitMs > 0) {
+				await new Promise((r) => setTimeout(r, waitMs));
+			}
 		}
 		throw new Error(
 			`The template's ready command did not succeed within ${config.envdHealthTimeoutMs} ms: ${readyCmd}`,
@@ -345,7 +353,7 @@ export class DockerService implements ContainerBackend {
 	async exec(
 		sandboxId: string,
 		cmd: string,
-		opts: { user: string; detach: boolean },
+		opts: { user: string; detach: boolean; timeoutMs?: number },
 	): Promise<number | null> {
 		const exec = await this.docker.getContainer(sandboxId).exec({
 			Cmd: ["/bin/sh", "-c", cmd],
@@ -358,12 +366,23 @@ export class DockerService implements ContainerBackend {
 			return null;
 		}
 		const stream = await exec.start({});
-		await new Promise<void>((resolve) => {
+		const waitForStream = new Promise<void>((resolve) => {
 			stream.on("end", resolve);
 			stream.on("close", resolve);
 			stream.on("error", () => resolve());
 			stream.resume();
 		});
+		if (opts.timeoutMs !== undefined) {
+			const finished = await Promise.race([
+				waitForStream.then(() => true),
+				new Promise<boolean>((resolve) =>
+					setTimeout(() => resolve(false), opts.timeoutMs),
+				),
+			]);
+			if (!finished) return null;
+		} else {
+			await waitForStream;
+		}
 		return (await exec.inspect()).ExitCode ?? null;
 	}
 

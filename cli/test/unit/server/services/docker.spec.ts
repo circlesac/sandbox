@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,9 @@ vi.mock("../../../../src/server/config.ts", () => ({
 		dockerSocket: "/var/run/docker.sock",
 		envdPort: 49983,
 		defaultTimeoutSec: 300,
+		defaultUser: "user",
+		envdHealthTimeoutMs: 500,
+		envdHealthIntervalMs: 100,
 	},
 }));
 
@@ -16,12 +20,21 @@ const inspect = vi.fn();
 const start = vi.fn();
 const stop = vi.fn();
 const remove = vi.fn();
+const execCreate = vi.fn();
+const execStart = vi.fn();
+const execInspect = vi.fn();
 
 vi.mock("dockerode", () => ({
 	default: class {
 		listContainers = listContainers;
 		getContainer() {
-			return { inspect, start, stop, remove };
+			return {
+				inspect,
+				start,
+				stop,
+				remove,
+				exec: execCreate,
+			};
 		}
 	},
 }));
@@ -154,5 +167,45 @@ describe("DockerService timeout anchor", () => {
 		const sandboxes = await backend.listSandboxes({ state: "running" });
 
 		expect(sandboxes.map((sandbox) => sandbox.sandboxId)).toEqual(["sbx-test"]);
+	});
+});
+
+describe("DockerService.runTemplateStart", () => {
+	let backend: InstanceType<typeof DockerService>;
+	let tempDir: string;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.useFakeTimers();
+		tempDir = mkdtempSync(join(tmpdir(), "sandbox-docker-"));
+		backend = new DockerService({
+			socketPath: "/var/run/docker.sock",
+			statePath: join(tempDir, "timeouts.json"),
+		});
+		inspect.mockResolvedValue({
+			Config: {
+				Labels: { "e2b.ready-cmd": "sleep 3600" },
+			},
+		});
+		execCreate.mockResolvedValue({
+			start: execStart,
+			inspect: execInspect,
+		});
+		execStart.mockImplementation(async () => {
+			// A command that never exits: its output stream never ends.
+			return Object.assign(new EventEmitter(), { resume() {} });
+		});
+		execInspect.mockResolvedValue({ ExitCode: 1 });
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	it("fails when the ready command does not finish before the health deadline", async () => {
+		const run = backend.runTemplateStart("sbx-test");
+		await vi.advanceTimersByTimeAsync(600);
+		await expect(run).rejects.toThrow(/did not succeed within 500 ms/);
 	});
 });

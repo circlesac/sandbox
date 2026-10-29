@@ -29,6 +29,21 @@ interface Build {
 	status: BuildStatus;
 	logEntries: BuildLogEntry[];
 	reason?: { message: string; step?: string };
+	tags: string[];
+}
+
+const FINISHED_BUILD_LIMIT = 100;
+
+function isValidFilesHash(hash: string): boolean {
+	return /^[a-zA-Z0-9_-]+$/.test(hash);
+}
+
+function assertFilesHash(hash: string, stepIndex: number): void {
+	if (!isValidFilesHash(hash)) {
+		throw new UnsupportedError(
+			`Step ${stepIndex + 1}: invalid files hash "${hash}"`,
+		);
+	}
 }
 
 /** One step of an E2B template, as Template().toJSON() serializes it. */
@@ -72,14 +87,16 @@ export class TemplateService {
 				`Template name "${name}" must be lowercase letters, digits, ".", "_" or "-"`,
 			);
 		}
+		this.evictFinishedBuilds();
 		const buildID = randomUUID();
+		const tags = req.tags ?? [];
 		this.builds.set(buildID, {
 			templateID: name,
 			buildID,
 			status: "waiting",
 			logEntries: [],
+			tags,
 		});
-		const tags = req.tags ?? [];
 		return {
 			templateID: name,
 			buildID,
@@ -109,8 +126,7 @@ export class TemplateService {
 	) {
 		if (token !== this.uploadToken)
 			throw new NotFoundError("Unknown upload URL");
-		if (!/^[a-zA-Z0-9_-]+$/.test(hash))
-			throw new NotFoundError("Unknown upload URL");
+		if (!isValidFilesHash(hash)) throw new NotFoundError("Unknown upload URL");
 		mkdirSync(this.filesDir, { recursive: true });
 		const temp = `${this.filePath(hash)}.${nanoid()}.tmp`;
 		writeFileSync(temp, Buffer.from(body));
@@ -252,6 +268,17 @@ export class TemplateService {
 		return join(this.filesDir, `${hash}.tar`);
 	}
 
+	/** Drops oldest ready/error builds when more than {@link FINISHED_BUILD_LIMIT} remain. */
+	private evictFinishedBuilds() {
+		const finished = [...this.builds.values()].filter(
+			(b) => b.status === "ready" || b.status === "error",
+		);
+		while (finished.length > FINISHED_BUILD_LIMIT) {
+			const oldest = finished.shift();
+			if (oldest) this.builds.delete(oldest.buildID);
+		}
+	}
+
 	/** Writes the Dockerfile and unpacks each COPY step's upload into a build context. */
 	private prepareContext(body: TemplateBuildStart, baseImage: string): string {
 		const dir = mkdtempSync(join(tmpdir(), "sandbox-template-"));
@@ -294,6 +321,7 @@ export class TemplateService {
 							`Step ${index + 1}: COPY needs files and a destination`,
 						);
 					}
+					assertFilesHash(step.filesHash, index);
 					const filesDir = join(dir, "files", step.filesHash);
 					mkdirSync(filesDir, { recursive: true });
 					const tar = spawnSync("tar", [
@@ -380,6 +408,12 @@ export class TemplateService {
 			if (errors.length > 0)
 				throw new Error(errors.map((e) => e.message).join("\n"));
 			log(`Built ${templateImage(build.templateID).repo}:latest`);
+			if (build.tags.length > 0) {
+				await this.docker.tagTemplate(build.templateID, build.tags);
+				for (const tag of build.tags) {
+					log(`Tagged ${templateImage(build.templateID).repo}:${tag}`);
+				}
+			}
 			build.status = "ready";
 		} catch (err) {
 			build.status = "error";
