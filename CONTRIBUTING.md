@@ -14,14 +14,14 @@ bun run test:tart        # E2B smoke suite on Tart macOS VMs
 bun run test:shuru       # E2B smoke suite on Shuru microVMs
 bun run test:sdk-matrix  # Docker integration suites on the lowest supported and the latest SDK
 bun run test:envd-lite   # envd-lite: go generate, gofmt, go vet, go test
-bun run test:upstream    # e2b-dev/runtime's API and envd tests against this server (report only)
+bun run test:upstream    # e2b-dev/runtime API/envd tests; fails on baseline regressions
 bun run test:coverage    # all tests with a coverage report for src/
 bun run format           # apply formatting
 ```
 
 `test:docker`, `test:tart`, and `test:shuru` fail with the missing prerequisite when the provider is not set up, instead of skipping. `test:local` runs what this machine can, including envd-lite when Go and protoc are installed, and lists what it could not run and why.
 
-`test:upstream` checks out a pinned commit of [e2b-dev/runtime](https://github.com/e2b-dev/runtime) under `~/.cache/sandbox`, starts a control plane, and runs upstream's `tests/integration` API and envd suites against it. Many of those tests cover E2B Cloud features this server does not have, so it prints a pass/fail table (`--out <file>` saves it) and does not fail on test failures. Pass `--run <regex>` to run a subset.
+`test:upstream` checks out a pinned commit of [e2b-dev/runtime](https://github.com/e2b-dev/runtime) under `~/.cache/sandbox`, starts a control plane, and runs upstream's `tests/integration` API and envd suites against it. It prints a pass/fail table (`--out <file>` saves it) and exits with a non-zero status if any test listed in `cli/scripts/upstream-baseline.txt` did not pass (regression); newly passing tests outside the baseline are reported as improvements and do not fail the run. Pass `--run <regex>` to run a subset (only baseline tests that ran are compared). After fixing conformance or adding coverage, refresh the baseline with `bun run test:upstream --update-baseline`.
 
 `test:coverage` counts only code that runs inside the vitest process. The integration suites drive a server started as a separate process, so the routes, proxy, and envd client they exercise appear uncovered there.
 

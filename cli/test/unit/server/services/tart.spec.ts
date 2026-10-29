@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LEGACY_LIFECYCLE } from "../../../../src/server/services/lifecycle.ts";
 
 vi.mock("../../../../src/server/config.ts", () => ({
@@ -83,7 +86,7 @@ describe("TartBackend", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		backend = new TartBackend();
+		backend = new TartBackend({ statePath: null });
 	});
 
 	it("has type tart", () => {
@@ -524,6 +527,268 @@ describe("TartBackend", () => {
 				spawnMock.mockReset();
 				spawnMock.mockReturnValue(mockProc);
 			}
+		});
+	});
+
+	describe("sandboxes across a control-plane restart", () => {
+		let tempDir: string;
+		let statePath: string;
+		/** A state file entry as the backend writes it. */
+		const stored = (id: string, paused?: boolean) => ({
+			sandboxId: id,
+			vmName: `sandbox-${id}`,
+			accessToken: "t",
+			templateId: "base",
+			createdAt: "2026-10-29T00:00:00.000Z",
+			timeoutFrom: "2026-10-29T00:00:00.000Z",
+			timeoutSec: 300,
+			lifecycle: LEGACY_LIFECYCLE,
+			paused,
+		});
+		const listing = (...vms: [string, string][]) =>
+			JSON.stringify(vms.map(([Name, State]) => ({ Name, State })));
+
+		beforeEach(() => {
+			tempDir = mkdtempSync(join(tmpdir(), "sandbox-tart-"));
+			statePath = join(tempDir, "instances.json");
+			vi.spyOn(console, "log").mockImplementation(() => {});
+		});
+
+		afterEach(() => {
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+
+		it("keeps a paused sandbox after a restart and resumes it", async () => {
+			let vmState = "stopped";
+			execSyncMock.mockImplementation((cmd: string) => {
+				if (cmd.startsWith("tart list")) {
+					return listing(
+						["sandbox-base", "stopped"],
+						["sandbox-sbx-keep", vmState],
+					);
+				}
+				if (cmd.startsWith("tart ip")) return "192.168.64.7";
+				return "";
+			});
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValue({ status: 204 }) as unknown as typeof fetch;
+			vi.useRealTimers();
+			const originalSetTimeout = globalThis.setTimeout;
+			globalThis.setTimeout = ((fn: () => void) =>
+				originalSetTimeout(fn, 0)) as typeof setTimeout;
+			try {
+				const first = new TartBackend({ statePath });
+				await first.createContainer({
+					sandboxId: "sbx-keep",
+					accessToken: "token-abc",
+					templateId: "base",
+					timeoutSec: 300,
+					metadata: { owner: "yg" },
+					lifecycle: LEGACY_LIFECYCLE,
+				});
+				first.refreshTimeout("sbx-keep", 900);
+				vmState = "suspended";
+				expect(await first.stopContainer("sbx-keep")).toBe(true);
+
+				// The server restarts: a new backend reads the same state file.
+				const restarted = new TartBackend({ statePath });
+				const list = await restarted.listSandboxes();
+				expect(list).toHaveLength(1);
+				expect(list[0]).toMatchObject({
+					sandboxId: "sbx-keep",
+					instanceId: "sandbox-sbx-keep",
+					accessToken: "token-abc",
+					templateId: "base",
+					timeoutSec: 900,
+					state: "paused",
+					metadata: { owner: "yg" },
+					lifecycle: LEGACY_LIFECYCLE,
+				});
+				expect(await restarted.listSandboxes({ state: "paused" })).toHaveLength(
+					1,
+				);
+				expect(execSyncMock).not.toHaveBeenCalledWith(
+					expect.stringMatching(/^tart (delete|stop)/),
+					expect.anything(),
+				);
+
+				// Connecting resumes it, as before the restart.
+				await restarted.startContainer("sbx-keep");
+				expect(await restarted.resolveTarget("sbx-keep", 49983)).toEqual({
+					host: "localhost",
+					port: mockPort,
+				});
+				expect((await restarted.inspectSandbox("sbx-keep"))?.state).toBe(
+					"paused",
+				);
+			} finally {
+				globalThis.setTimeout = originalSetTimeout;
+				globalThis.fetch = originalFetch;
+			}
+		});
+
+		it("drops a stored sandbox whose VM is gone", async () => {
+			writeFileSync(
+				statePath,
+				JSON.stringify({ "sbx-gone": stored("sbx-gone", true) }),
+			);
+			execSyncMock.mockReturnValue(listing(["sandbox-base", "stopped"]));
+
+			const restarted = new TartBackend({ statePath });
+
+			expect(await restarted.listSandboxes()).toEqual([]);
+			expect(await restarted.inspectSandbox("sbx-gone")).toBeNull();
+			expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({});
+			expect(execSyncMock).not.toHaveBeenCalledWith(
+				expect.stringMatching(/^tart delete/),
+				expect.anything(),
+			);
+		});
+
+		it("still deletes a VM that is in neither the state nor the starting set", async () => {
+			writeFileSync(
+				statePath,
+				JSON.stringify({ "sbx-keep": stored("sbx-keep", true) }),
+			);
+			execSyncMock.mockImplementation((cmd: string) =>
+				cmd.startsWith("tart list")
+					? listing(
+							["sandbox-base", "stopped"],
+							["sandbox-sbx-keep", "suspended"],
+							["sandbox-sbx-orphan", "suspended"],
+						)
+					: "",
+			);
+
+			const restarted = new TartBackend({ statePath });
+			const list = await restarted.listSandboxes();
+
+			expect(list.map((s) => s.sandboxId)).toEqual(["sbx-keep"]);
+			expect(execSyncMock).toHaveBeenCalledWith(
+				"tart delete sandbox-sbx-orphan",
+				expect.anything(),
+			);
+			expect(execSyncMock).not.toHaveBeenCalledWith(
+				"tart delete sandbox-sbx-keep",
+				expect.anything(),
+			);
+		});
+
+		it("ignores a malformed state file without throwing", async () => {
+			writeFileSync(statePath, "{not json");
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			execSyncMock.mockReturnValue(listing());
+
+			let restarted: InstanceType<typeof TartBackend> | undefined;
+			expect(() => {
+				restarted = new TartBackend({ statePath });
+			}).not.toThrow();
+
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringMatching(/Failed to read Tart state/),
+			);
+			expect(await restarted?.listSandboxes()).toEqual([]);
+		});
+
+		it("skips malformed entries and loads the rest", async () => {
+			writeFileSync(
+				statePath,
+				JSON.stringify({
+					"sbx-ok": stored("sbx-ok", true),
+					"sbx-bad": { ...stored("sbx-bad", true), timeoutSec: "soon" },
+					"sbx-text": "paused",
+				}),
+			);
+			execSyncMock.mockImplementation((cmd: string) =>
+				cmd.startsWith("tart list")
+					? listing(
+							["sandbox-sbx-ok", "suspended"],
+							["sandbox-sbx-bad", "suspended"],
+						)
+					: "",
+			);
+
+			const restarted = new TartBackend({ statePath });
+			const list = await restarted.listSandboxes();
+
+			expect(list.map((s) => s.sandboxId)).toEqual(["sbx-ok"]);
+			// The entry the server could not read leaves its VM an orphan.
+			expect(execSyncMock).toHaveBeenCalledWith(
+				"tart delete sandbox-sbx-bad",
+				expect.anything(),
+			);
+		});
+
+		it("reconnects envd traffic to a stored running VM on first use", async () => {
+			writeFileSync(
+				statePath,
+				JSON.stringify({
+					"sbx-run": stored("sbx-run"),
+					"sbx-rest": stored("sbx-rest", true),
+				}),
+			);
+			execSyncMock.mockImplementation((cmd: string) => {
+				if (cmd.startsWith("tart list")) {
+					return listing(
+						["sandbox-sbx-run", "running"],
+						["sandbox-sbx-rest", "suspended"],
+					);
+				}
+				if (cmd.startsWith("tart ip")) return "192.168.64.9";
+				return "";
+			});
+
+			const restarted = new TartBackend({ statePath });
+
+			// Several requests arrive at once; one proxy is created.
+			const [envd, app] = await Promise.all([
+				restarted.resolveTarget("sbx-run", 49983),
+				restarted.resolveTarget("sbx-run", 3000),
+			]);
+			expect(envd).toEqual({ host: "localhost", port: mockPort });
+			expect(app).toEqual({ host: "192.168.64.9", port: 3000 });
+			expect(mockProxyServer.listen).toHaveBeenCalledTimes(1);
+			expect(execSyncMock).toHaveBeenCalledWith(
+				"tart ip --wait 3 sandbox-sbx-run",
+				expect.anything(),
+			);
+			expect((await restarted.inspectSandbox("sbx-run"))?.hostPort).toBe(
+				mockPort,
+			);
+
+			// A paused VM stays paused until a resume asks for it.
+			expect(await restarted.resolveTarget("sbx-rest", 49983)).toBeNull();
+			expect(execSyncMock).not.toHaveBeenCalledWith(
+				expect.stringMatching(/^tart ip .*sandbox-sbx-rest/),
+				expect.anything(),
+			);
+		});
+
+		it("gives a stored running VM its proxy when it is inspected", async () => {
+			writeFileSync(
+				statePath,
+				JSON.stringify({ "sbx-run": stored("sbx-run") }),
+			);
+			execSyncMock.mockImplementation((cmd: string) => {
+				if (cmd.startsWith("tart list")) {
+					return listing(["sandbox-sbx-run", "running"]);
+				}
+				if (cmd.startsWith("tart ip")) return "192.168.64.9";
+				return "";
+			});
+
+			const restarted = new TartBackend({ statePath });
+			const info = await restarted.inspectSandbox("sbx-run");
+
+			expect(info?.state).toBe("running");
+			expect(info?.hostPort).toBe(mockPort);
+			expect(await restarted.resolveTarget("sbx-run", 49983)).toEqual({
+				host: "localhost",
+				port: mockPort,
+			});
+			expect(mockProxyServer.listen).toHaveBeenCalledTimes(1);
 		});
 	});
 });
