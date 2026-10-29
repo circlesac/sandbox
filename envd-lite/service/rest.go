@@ -176,9 +176,19 @@ func HandleFiles(w http.ResponseWriter, r *http.Request) {
 
 			// Use path as-is for single file upload.
 			// Only append filename if path looks like a directory (ends with /).
+			// The part filename is client-controlled and the directory is what
+			// the signed URL authorises, so only its base name is used, and
+			// names that resolve to the directory itself or its parent are
+			// rejected rather than joined.
 			filePath := path
-			if strings.HasSuffix(path, "/") && part.FileName() != "" {
-				filePath = filepath.Join(path, part.FileName())
+			if strings.HasSuffix(path, "/") {
+				name := filepath.Base(part.FileName())
+				if name == "" || name == "." || name == ".." || strings.ContainsRune(name, filepath.Separator) {
+					part.Close()
+					http.Error(w, `{"error":"invalid filename"}`, http.StatusBadRequest)
+					return
+				}
+				filePath = filepath.Join(path, name)
 			}
 
 			if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {

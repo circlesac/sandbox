@@ -52,8 +52,14 @@ type runningProc struct {
 	endEvent *procpb.ProcessEvent
 	done     chan struct{}
 
-	// readers tracks the stdout/stderr pumps. cmd.Wait closes those pipes, so
-	// it must not run before they have read everything.
+	// stdoutR/stderrR are the parent's read ends of the output pipes. They
+	// are plain os.Pipe files owned here, not cmd.StdoutPipe, so cmd.Wait
+	// neither closes them nor waits on them; reap does, after the process
+	// has exited and the readers had a chance to drain.
+	stdoutR, stderrR *os.File
+
+	// readers tracks the stdout/stderr (or PTY) pumps. reap waits for them
+	// before publishing End so that End follows every data event.
 	readers sync.WaitGroup
 }
 
@@ -249,6 +255,7 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 		}
 		proc.ptyFile = ptmx
 		proc.stdin = ptmx
+		proc.readers.Add(1)
 		go s.readPTY(proc, ptmx)
 	} else {
 		// Place the child in its own process group so signals/cleanup can target
@@ -259,18 +266,35 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 		if err != nil {
 			return nil, nil, err
 		}
-		stdoutR, err := cmd.StdoutPipe()
+		// Own the output pipes instead of using cmd.StdoutPipe: exec passes an
+		// *os.File straight to the child, so cmd.Wait returns when the process
+		// exits rather than when the last writer (possibly a background child
+		// that inherited the pipe) closes it.
+		stdoutR, stdoutW, err := os.Pipe()
 		if err != nil {
 			return nil, nil, err
 		}
-		stderrR, err := cmd.StderrPipe()
+		stderrR, stderrW, err := os.Pipe()
 		if err != nil {
+			stdoutR.Close()
+			stdoutW.Close()
 			return nil, nil, err
 		}
-		if err := cmd.Start(); err != nil {
+		cmd.Stdout = stdoutW
+		cmd.Stderr = stderrW
+		err = cmd.Start()
+		// The child holds its own copies; the parent must drop the write ends
+		// or the readers would never see EOF.
+		stdoutW.Close()
+		stderrW.Close()
+		if err != nil {
+			stdoutR.Close()
+			stderrR.Close()
 			return nil, nil, err
 		}
 		proc.stdin = stdin
+		proc.stdoutR = stdoutR
+		proc.stderrR = stderrR
 		proc.readers.Add(2)
 		go s.readStream(proc, stdoutR, true)
 		go s.readStream(proc, stderrR, false)
@@ -284,7 +308,7 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 	return proc, sub, nil
 }
 
-func (s *ProcessService) readStream(proc *runningProc, r io.ReadCloser, isStdout bool) {
+func (s *ProcessService) readStream(proc *runningProc, r io.Reader, isStdout bool) {
 	defer proc.readers.Done()
 	buf := make([]byte, readChunkSize)
 	for {
@@ -313,6 +337,7 @@ func (s *ProcessService) readStream(proc *runningProc, r io.ReadCloser, isStdout
 }
 
 func (s *ProcessService) readPTY(proc *runningProc, ptmx *os.File) {
+	defer proc.readers.Done()
 	buf := make([]byte, readChunkSize)
 	for {
 		n, err := ptmx.Read(buf)
@@ -334,12 +359,31 @@ func (s *ProcessService) readPTY(proc *runningProc, ptmx *os.File) {
 }
 
 func (s *ProcessService) reap(proc *runningProc) {
-	proc.readers.Wait()
+	// Returns when the process itself exits. Nothing here waits on the output
+	// pipes, so a background child that inherited them cannot hold End back.
 	err := proc.cmd.Wait()
 
-	if proc.ptyFile != nil {
-		proc.ptyFile.Close()
+	// Output written just before exit may still be in the pipe. Normally the
+	// readers hit EOF within microseconds; if a lingering child keeps the
+	// write end open, give up after a short drain window instead.
+	readersDone := make(chan struct{})
+	go func() {
+		proc.readers.Wait()
+		close(readersDone)
+	}()
+	select {
+	case <-readersDone:
+	case <-time.After(200 * time.Millisecond):
 	}
+
+	// Close the parent's read ends so blocked readers return, then wait for
+	// them so End is published after every data event.
+	for _, f := range []*os.File{proc.stdoutR, proc.stderrR, proc.ptyFile} {
+		if f != nil {
+			f.Close()
+		}
+	}
+	<-readersDone
 
 	exitCode := int32(0)
 	exited := true
