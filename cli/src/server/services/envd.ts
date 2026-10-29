@@ -5,7 +5,11 @@ export class EnvdService {
 	async waitForHealth(hostPort: number): Promise<void> {
 		await pollUntil(
 			async () => {
-				const res = await fetch(`http://localhost:${hostPort}/health`);
+				// Each probe is bounded: an envd that accepts but never answers
+				// (a VM still resuming) would otherwise hold the poll forever.
+				const res = await fetch(`http://localhost:${hostPort}/health`, {
+					signal: AbortSignal.timeout(2_000),
+				});
 				if (!res.ok && res.status !== 204) {
 					throw new Error(`envd health check returned ${res.status}`);
 				}
@@ -36,6 +40,7 @@ export class EnvdService {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(payload),
+			signal: AbortSignal.timeout(30_000),
 		});
 
 		if (!res.ok && res.status !== 204) {

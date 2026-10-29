@@ -1,4 +1,10 @@
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import {
+	existsSync,
+	unlinkSync,
+	writeFileSync,
+	createWriteStream,
+} from "node:fs";
 import { createServer } from "node:net";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
@@ -72,6 +78,10 @@ export default async function setup() {
 	serverProcess.stderr?.on("data", (data: Buffer) => {
 		process.stderr.write(`[server] ${data}`);
 	});
+	// Its request log, kept for diagnosing a failure: tmpdir()/sandbox-integration-server.log
+	serverProcess.stdout?.pipe(
+		createWriteStream(join(tmpdir(), "sandbox-integration-server.log")),
+	);
 
 	try {
 		await waitForHealth(port);

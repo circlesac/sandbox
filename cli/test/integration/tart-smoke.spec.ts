@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import { createWriteStream } from "node:fs";
 import { createServer } from "node:net";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
@@ -74,6 +76,10 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 		serverProcess.stderr?.on("data", (data: Buffer) => {
 			process.stderr.write(`[tart-server] ${data}`);
 		});
+		// Its request log, kept for diagnosing a failure: tmpdir()/sandbox-tart-server.log
+		serverProcess.stdout?.pipe(
+			createWriteStream(join(tmpdir(), "sandbox-tart-server.log")),
+		);
 
 		await waitForHealth(port, 60_000);
 

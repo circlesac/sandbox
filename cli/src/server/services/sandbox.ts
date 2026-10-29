@@ -249,6 +249,7 @@ export class SandboxService {
 								method: "POST",
 								headers: { "X-Access-Token": p.accessToken },
 								body: req.envVars.JIT_CONFIG,
+								signal: AbortSignal.timeout(30_000),
 							},
 						);
 						if (!res.ok) throw new Error(`envd answered HTTP ${res.status}`);
@@ -668,6 +669,7 @@ export class SandboxService {
 		if (!target) return [];
 		const res = await fetch(`http://${target.host}:${target.port}/metrics`, {
 			headers: { "X-Access-Token": info.accessToken },
+			signal: AbortSignal.timeout(10_000),
 		});
 		if (!res.ok) {
 			throw new UnsupportedError(

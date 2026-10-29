@@ -252,7 +252,9 @@ export class TartBackend implements ContainerBackend {
 		const envdPollMs = isSuspended ? 200 : 2000;
 		for (let i = 0; i < envdMaxRetries; i++) {
 			try {
-				const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
+				const res = await fetch(`http://${vmIp}:${config.envdPort}/health`, {
+					signal: AbortSignal.timeout(2_000),
+				});
 				if (res.status === 204) {
 					envdReady = true;
 					break;
@@ -345,7 +347,9 @@ export class TartBackend implements ContainerBackend {
 		// Wait for envd-lite to become healthy (suspended resume is near-instant)
 		for (let i = 0; i < (coldBoot ? 60 : 30); i++) {
 			try {
-				const res = await fetch(`http://${vmIp}:${config.envdPort}/health`);
+				const res = await fetch(`http://${vmIp}:${config.envdPort}/health`, {
+					signal: AbortSignal.timeout(2_000),
+				});
 				if (res.status === 204) break;
 			} catch {
 				// not ready yet

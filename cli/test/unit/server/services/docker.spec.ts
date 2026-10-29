@@ -206,8 +206,12 @@ describe("DockerService.runTemplateStart", () => {
 	});
 
 	it("fails when the ready command does not finish before the health deadline", async () => {
-		const run = backend.runTemplateStart("sbx-test");
+		// The expectation attaches before the timers run, so the rejection is
+		// never unhandled.
+		const failed = expect(backend.runTemplateStart("sbx-test")).rejects.toThrow(
+			/did not succeed within 500 ms/,
+		);
 		await vi.advanceTimersByTimeAsync(600);
-		await expect(run).rejects.toThrow(/did not succeed within 500 ms/);
+		await failed;
 	});
 });
