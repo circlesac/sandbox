@@ -37,6 +37,7 @@ function fakeDocker(buildResult: () => void = () => {}) {
 				buildResult();
 			},
 		),
+		tagTemplate: vi.fn(async () => "sha256:deadbeef"),
 	};
 	return { docker: docker as unknown as DockerService, built };
 }
@@ -320,5 +321,63 @@ describe("TemplateService", () => {
 		const service = new TemplateService(docker, filesDir);
 		const { buildID } = service.requestBuild({ name: "one" });
 		expect(() => service.status("two", buildID)).toThrow(NotFoundError);
+	});
+
+	it("rejects a COPY step whose filesHash would escape the files store", async () => {
+		const { docker } = fakeDocker();
+		const service = new TemplateService(docker, filesDir);
+		const { templateID, buildID } = service.requestBuild({ name: "evil" });
+		await expect(
+			service.startBuild(templateID, buildID, {
+				fromTemplate: "base",
+				steps: [
+					{
+						type: "COPY",
+						args: ["a", "/a"],
+						filesHash: "../../../../tmp/x",
+					},
+				],
+			}),
+		).rejects.toThrow(UnsupportedError);
+	});
+
+	it("applies requested tags after a successful build", async () => {
+		const tagTemplate = vi.fn(async () => "sha256:deadbeef");
+		const { docker } = fakeDocker();
+		(
+			docker as DockerService & {
+				tagTemplate: typeof tagTemplate;
+			}
+		).tagTemplate = tagTemplate;
+		const service = new TemplateService(docker, filesDir);
+		const { templateID, buildID } = service.requestBuild({
+			name: "tagged",
+			tags: ["v1", "stable"],
+		});
+		await service.startBuild(templateID, buildID, { fromTemplate: "base" });
+		await waitForStatus(service, templateID, buildID);
+		expect(tagTemplate).toHaveBeenCalledWith("tagged", ["v1", "stable"]);
+	});
+
+	it("evicts the oldest finished builds beyond the most recent 100 on a new request", async () => {
+		const { docker } = fakeDocker();
+		const service = new TemplateService(docker, filesDir);
+		const finished: string[] = [];
+		for (let i = 0; i < 101; i++) {
+			const { templateID, buildID } = service.requestBuild({ name: "app" });
+			finished.push(buildID);
+			await service.startBuild(templateID, buildID, { fromTemplate: "base" });
+			await waitForStatus(service, templateID, buildID);
+		}
+		const oldest = finished[0];
+		if (!oldest) throw new Error("expected a finished build");
+		expect(service.status("app", oldest).status).toBe("ready");
+
+		service.requestBuild({ name: "app" });
+
+		expect(() => service.status("app", oldest)).toThrow(NotFoundError);
+		const newestKept = finished[100];
+		if (!newestKept) throw new Error("expected a finished build");
+		expect(service.status("app", newestKept).status).toBe("ready");
 	});
 });

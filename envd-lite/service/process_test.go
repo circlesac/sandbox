@@ -725,6 +725,73 @@ func TestReplayBuffer_DropOldest(t *testing.T) {
 	}
 }
 
+// A background child that inherits stdout must not delay the End event: the
+// command's own exit decides when it ends, not the last writer on the pipe.
+func TestStart_BackgroundChildDoesNotDelayEnd(t *testing.T) {
+	client, _, stop := newProcessTestServer(t)
+	defer stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	started := time.Now()
+	stream, err := client.Start(ctx, connect.NewRequest(&procpb.StartRequest{
+		Process: &procpb.ProcessConfig{Cmd: "/bin/sh", Args: []string{"-c", "sleep 30 & echo started"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := collectStart(t, stream)
+	if err != nil {
+		t.Fatalf("stream failed after %s: %v", time.Since(started), err)
+	}
+
+	var pid uint32
+	var out strings.Builder
+	var end *procpb.ProcessEvent_EndEvent
+	for _, ev := range events {
+		switch e := ev.Event.(type) {
+		case *procpb.ProcessEvent_Start:
+			pid = e.Start.Pid
+		case *procpb.ProcessEvent_Data:
+			if s, ok := e.Data.Output.(*procpb.ProcessEvent_DataEvent_Stdout); ok {
+				out.Write(s.Stdout)
+			}
+		case *procpb.ProcessEvent_End:
+			end = e.End
+		}
+	}
+	// Kill the orphaned sleep via the process group so it does not outlive the test.
+	defer client.SendSignal(context.Background(), connect.NewRequest(&procpb.SendSignalRequest{
+		Process: &procpb.ProcessSelector{Selector: &procpb.ProcessSelector_Pid{Pid: pid}},
+		Signal:  procpb.Signal_SIGNAL_SIGKILL,
+	}))
+
+	if end == nil {
+		t.Fatalf("no end event after %s", time.Since(started))
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Errorf("end event took %s, want a few hundred ms at most", elapsed)
+	}
+	if end.ExitCode != 0 || !end.Exited {
+		t.Errorf("end=%+v want exit 0", end)
+	}
+	if !strings.Contains(out.String(), "started") {
+		t.Errorf("stdout missing 'started': %q", out.String())
+	}
+
+	// The process must no longer be listed as running.
+	resp, err := client.List(context.Background(), connect.NewRequest(&procpb.ListRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range resp.Msg.Processes {
+		if p.Pid == pid {
+			t.Errorf("pid %d still listed as running", pid)
+		}
+	}
+}
+
 // streamReader adapts ServerStreamForClient to io.Reader for cleanup drains.
 type streamReader struct {
 	s *connect.ServerStreamForClient[procpb.StartResponse]
