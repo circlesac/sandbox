@@ -12,6 +12,7 @@ import {
 	SandboxService,
 	UnsupportedError,
 } from "../../../../src/server/services/sandbox.ts";
+import { resolveSandboxByToken } from "../../../../src/server/services/proxy.ts";
 import { TtlService } from "../../../../src/server/services/ttl.ts";
 import type { SandboxInfo } from "../../../../src/server/types.ts";
 
@@ -101,8 +102,16 @@ class FakeBackend implements ContainerBackend {
 	/** While set, a pause waits for it, like a slow docker stop. */
 	stopGate: Promise<void> | null = null;
 
+	/** When set, the next pause fails with it, like a VM that would not suspend. */
+	stopError: Error | null = null;
+
 	async stopContainer(sandboxId: string, opts: { keepMemory?: boolean } = {}) {
 		if (this.stopGate) await this.stopGate;
+		if (this.stopError) {
+			const err = this.stopError;
+			this.stopError = null;
+			throw err;
+		}
 		const sb = this.sandboxes.get(sandboxId);
 		if (!sb) return false;
 		sb.state = opts.keepMemory ? "frozen" : "stopped";
@@ -678,6 +687,110 @@ describe("SandboxService", () => {
 				await ids({ startedAfter: new Date(Date.now() + 1_000).toISOString() }),
 			).toEqual([]);
 			expect(await ids({ template: "base" })).toEqual([old.sandboxID]);
+		});
+	});
+
+	describe("second review", () => {
+		it("rejects a timeout that is not a number instead of expiring at once", async () => {
+			await expect(
+				service.create({ timeout: "abc" as unknown as number }),
+			).rejects.toThrow(/number of seconds/);
+			const { sandboxID } = await service.create({});
+			await expect(
+				service.setTimeout(sandboxID, "abc" as unknown as number),
+			).rejects.toThrow(/number of seconds/);
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(backend.stateOf(sandboxID)).toBe("running");
+		});
+
+		it("kills only a sandbox it knows, never a container by another name", async () => {
+			const removed = vi.spyOn(backend, "removeContainer");
+			expect(await service.kill("cloudflared")).toBe(false);
+			expect(removed).not.toHaveBeenCalled();
+		});
+
+		it("leaves a sandbox alone when its expiry runs before the deadline", async () => {
+			const { sandboxID } = await service.create({ timeout: 10 });
+			await vi.advanceTimersByTimeAsync(5_000);
+			// As when a connect extended it while this expiry waited its turn.
+			await service.expire(sandboxID);
+			expect(backend.stateOf(sandboxID)).toBe("running");
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(backend.stateOf(sandboxID)).toBe("removed");
+		});
+
+		it("extends a running sandbox on connect without restarting it", async () => {
+			const { sandboxID } = await service.create({});
+			backend.events.length = 0;
+			envd.init.mockClear();
+			await service.connect(sandboxID, 600);
+			expect(backend.events).toEqual([]);
+			expect(envd.init).not.toHaveBeenCalled();
+		});
+
+		it("shares one resume between concurrent requests for a paused sandbox", async () => {
+			const { sandboxID } = await service.create({
+				autoPause: true,
+				autoResume: true,
+			});
+			await service.pause(sandboxID);
+			const connect = vi.spyOn(service, "connect");
+			await Promise.all([
+				service.resumeForTraffic(sandboxID),
+				service.resumeForTraffic(sandboxID),
+			]);
+			expect(connect).toHaveBeenCalledTimes(1);
+		});
+
+		it("rejects an unknown state filter instead of listing everything", async () => {
+			await service.create({});
+			await expect(service.list({ state: "stopped" })).rejects.toThrow(
+				/Unknown sandbox state stopped/,
+			);
+		});
+
+		it("gives a sandbox its timeout back when a pause fails, retrying no faster than 30 s", async () => {
+			const { sandboxID } = await service.create({ timeout: 10 });
+			backend.stopError = new Error("did not suspend");
+			await expect(service.pause(sandboxID)).rejects.toThrow(/did not suspend/);
+			await vi.advanceTimersByTimeAsync(29_000);
+			expect(backend.stateOf(sandboxID)).toBe("running");
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(backend.stateOf(sandboxID)).toBe("removed");
+		});
+
+		it("writes an async create's runner config with the access token, and forgets the token if boot fails", async () => {
+			const fetched: { url: string; token: string | null }[] = [];
+			const realFetch = globalThis.fetch;
+			globalThis.fetch = (async (url: string, init?: RequestInit) => {
+				fetched.push({
+					url,
+					token: new Headers(init?.headers).get("X-Access-Token"),
+				});
+				return new Response(null, { status: 204 });
+			}) as typeof fetch;
+			try {
+				const created = await service.createAsync({
+					envVars: { JIT_CONFIG: "cfg" },
+				});
+				await vi.advanceTimersByTimeAsync(0);
+				expect(fetched).toEqual([
+					{
+						url: "http://localhost:40000/files?path=/tmp/jitconfig",
+						token: created.envdAccessToken,
+					},
+				]);
+
+				envd.waitForHealth.mockRejectedValueOnce(new Error("no envd"));
+				vi.spyOn(console, "error").mockImplementation(() => {});
+				const failed = await service.createAsync({});
+				await vi.advanceTimersByTimeAsync(0);
+				expect(
+					resolveSandboxByToken(failed.envdAccessToken ?? ""),
+				).toBeUndefined();
+			} finally {
+				globalThis.fetch = realFetch;
+			}
 		});
 	});
 

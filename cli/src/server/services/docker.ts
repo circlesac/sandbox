@@ -104,11 +104,12 @@ export class DockerService implements ContainerBackend {
 		const waited = new Promise<"waiting">((resolve) => {
 			timer = setTimeout(() => resolve("waiting"), this.imagePullWaitMs);
 		});
+		const pulling = this.pullImage(templateId).then(() => "pulled" as const);
+		// The download continues after a "still downloading" answer; a later
+		// failure is reported to the next request, not left unhandled.
+		pulling.catch(() => {});
 		try {
-			const outcome = await Promise.race([
-				this.pullImage(templateId).then(() => "pulled" as const),
-				waited,
-			]);
+			const outcome = await Promise.race([pulling, waited]);
 			if (outcome === "waiting") {
 				throw new RetryableError(
 					`Template "${templateId}" image ${remote} is still downloading; retry shortly`,
@@ -393,10 +394,16 @@ export class DockerService implements ContainerBackend {
 					},
 				);
 			})
-				.catch(() => {
-					throw new NotFoundError(
-						`Template "${templateId}" not found. Checked:\n  - ${localImageName(templateId)}\n  - ${remote}`,
-					);
+				.catch((err: unknown) => {
+					const message = err instanceof Error ? err.message : String(err);
+					// Only a missing image is "not found"; a network or registry
+					// failure keeps its own message.
+					if (/not found|manifest unknown|pull access denied/i.test(message)) {
+						throw new NotFoundError(
+							`Template "${templateId}" not found. Checked:\n  - ${localImageName(templateId)}\n  - ${remote}`,
+						);
+					}
+					throw new Error(`Could not download ${remote}: ${message}`);
 				})
 				.finally(() => this.pulls.delete(remote));
 			this.pulls.set(remote, pull);
@@ -460,6 +467,8 @@ export class DockerService implements ContainerBackend {
 			const info = await container.inspect();
 			// A container being removed is already gone for every caller.
 			if (isGone(info.State.Status)) return null;
+			// Only this server's sandboxes: never another container with that name.
+			if (info.Config.Labels?.["e2b.sandbox-id"] !== sandboxId) return null;
 			return this.parseContainerInfo(info);
 		} catch (err: unknown) {
 			if (isDockerNotFound(err)) return null;
@@ -666,9 +675,7 @@ export class DockerService implements ContainerBackend {
 				Number(labels["e2b.timeout"] ?? config.defaultTimeoutSec),
 			hostPort,
 			state: info.State.Running && !info.State.Paused ? "running" : "paused",
-			metadata: labels["e2b.metadata"]
-				? JSON.parse(labels["e2b.metadata"])
-				: undefined,
+			metadata: parseJsonLabel(labels["e2b.metadata"]),
 			lifecycle: parseLifecycle(labels),
 		};
 	}
@@ -689,9 +696,7 @@ export class DockerService implements ContainerBackend {
 			timeoutSec: Number(labels["e2b.timeout"] ?? config.defaultTimeoutSec),
 			hostPort: portMapping?.PublicPort ?? 0,
 			state: c.State === "running" ? "running" : "paused",
-			metadata: labels["e2b.metadata"]
-				? JSON.parse(labels["e2b.metadata"])
-				: undefined,
+			metadata: parseJsonLabel(labels["e2b.metadata"]),
 			lifecycle: parseLifecycle(labels),
 		};
 	}
@@ -761,12 +766,25 @@ function isDockerNotModified(err: unknown): boolean {
 }
 
 function parseLifecycle(labels: SandboxLabels): SandboxLifecycle {
-	const raw = labels["e2b.lifecycle"];
-	if (!raw) return LEGACY_LIFECYCLE;
 	return {
 		...LEGACY_LIFECYCLE,
-		...(JSON.parse(raw) as Partial<SandboxLifecycle>),
+		...parseJsonLabel<Partial<SandboxLifecycle>>(labels["e2b.lifecycle"]),
 	};
+}
+
+/**
+ * A JSON label, or undefined when absent or malformed: one bad container
+ * must not break listing every other sandbox.
+ */
+function parseJsonLabel<T = Record<string, string>>(
+	raw: string | undefined,
+): T | undefined {
+	if (!raw) return undefined;
+	try {
+		return JSON.parse(raw) as T;
+	} catch {
+		return undefined;
+	}
 }
 
 function isGone(status: string | undefined): boolean {

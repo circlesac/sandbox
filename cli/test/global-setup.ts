@@ -73,7 +73,14 @@ export default async function setup() {
 		process.stderr.write(`[server] ${data}`);
 	});
 
-	await waitForHealth(port);
+	try {
+		await waitForHealth(port);
+	} catch (err) {
+		// Do not leave a server running that no teardown will stop.
+		serverProcess.kill("SIGTERM");
+		serverProcess = undefined;
+		throw err;
+	}
 
 	writeFileSync(
 		SERVER_INFO_PATH,

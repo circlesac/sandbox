@@ -168,6 +168,20 @@ describe("DockerService.resolveTarget", () => {
 });
 
 describe("DockerService.removeContainer", () => {
+	it("does not treat a container without its sandbox label as a sandbox", async () => {
+		const labels = container.labels;
+		container.labels = {};
+		expect(await backend().inspectSandbox("sbx-a")).toBeNull();
+		container.labels = { ...labels, "e2b.sandbox-id": "sbx-other" };
+		expect(await backend().inspectSandbox("sbx-a")).toBeNull();
+		// A malformed lifecycle label falls back instead of throwing.
+		container.labels = { ...labels, "e2b.lifecycle": "{not json" };
+		expect((await backend().inspectSandbox("sbx-a"))?.lifecycle.secure).toBe(
+			true,
+		);
+		container.labels = labels;
+	});
+
 	it("treats a remove already under way as gone, not as an error", async () => {
 		removeError = Object.assign(new Error("removal already in progress"), {
 			statusCode: 409,

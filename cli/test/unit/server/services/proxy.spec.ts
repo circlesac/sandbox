@@ -340,6 +340,8 @@ describe("handleProxyRequest", () => {
 		"//init",
 		"/./init",
 		"/x/../init",
+		"/init/",
+		"/init//",
 		"/freeze",
 		"/upgrade",
 	])(

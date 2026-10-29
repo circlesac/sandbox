@@ -71,11 +71,6 @@ export class SandboxService {
 		return b;
 	}
 
-	private backendForSandbox(sandboxId: string): ContainerBackend {
-		const platform = this._sandboxPlatform.get(sandboxId);
-		return platform ? this.backendFor(platform) : this.backends.linux;
-	}
-
 	/** Finds a sandbox on whichever backend holds it, including after a restart. */
 	async locate(
 		sandboxId: string,
@@ -126,9 +121,10 @@ export class SandboxService {
 		req: CreateRequest,
 		p: ReturnType<SandboxService["prepare"]>,
 	): Promise<void> {
+		// A pause or connect that arrives while the sandbox boots waits for it.
 		this.creating.add(p.sandboxId);
 		try {
-			await this.bootNow(req, p);
+			await this.serialize(p.sandboxId, () => this.bootNow(req, p));
 		} finally {
 			this.creating.delete(p.sandboxId);
 		}
@@ -180,6 +176,11 @@ export class SandboxService {
 	 * refresh accept 0.
 	 */
 	private timeoutWithinLimit(timeoutSec: number, min = 1): number {
+		// A body is not validated against its schema, so "abc" can arrive here;
+		// NaN would pass both bounds and fire the timer at once.
+		if (typeof timeoutSec !== "number" || !Number.isFinite(timeoutSec)) {
+			throw new UnsupportedError("timeout must be a number of seconds");
+		}
 		if (timeoutSec < min) {
 			throw new UnsupportedError(
 				min === 1
@@ -241,10 +242,16 @@ export class SandboxService {
 				if (req.envVars?.JIT_CONFIG) {
 					const info = await p.backend.inspectSandbox(p.sandboxId);
 					try {
-						await fetch(
+						// envd enforces the sandbox's access token once /init set it.
+						const res = await fetch(
 							`http://localhost:${info?.hostPort}/files?path=/tmp/jitconfig`,
-							{ method: "POST", body: req.envVars.JIT_CONFIG },
+							{
+								method: "POST",
+								headers: { "X-Access-Token": p.accessToken },
+								body: req.envVars.JIT_CONFIG,
+							},
 						);
+						if (!res.ok) throw new Error(`envd answered HTTP ${res.status}`);
 						console.log(
 							`[async] Wrote /tmp/jitconfig to sandbox ${p.sandboxId}`,
 						);
@@ -256,6 +263,7 @@ export class SandboxService {
 			} catch (err) {
 				console.error(`[async] Sandbox ${p.sandboxId} failed:`, err);
 				this._sandboxPlatform.delete(p.sandboxId);
+				clearPortCache(p.sandboxId);
 			}
 		})();
 
@@ -315,8 +323,9 @@ export class SandboxService {
 		sandboxId = id;
 		this.ttl.clear(sandboxId);
 		clearPortCache(sandboxId);
-		const backend = found?.backend ?? this.backendForSandbox(sandboxId);
-		const result = await backend.removeContainer(sandboxId);
+		// Only a sandbox this server knows: never another container by its name.
+		if (!found) return false;
+		const result = await found.backend.removeContainer(sandboxId);
 		this._sandboxPlatform.delete(sandboxId);
 		return result;
 	}
@@ -378,20 +387,45 @@ export class SandboxService {
 		}
 		this.ttl.clear(sandboxId);
 		clearRoutes(sandboxId);
-		return backend.stopContainer(sandboxId, { keepMemory });
+		try {
+			return await backend.stopContainer(sandboxId, { keepMemory });
+		} catch (err) {
+			// The sandbox still runs: give it its timeout back, retrying no
+			// sooner than every 30 s so a pause that keeps failing cannot spin.
+			const remaining =
+				(new Date(info.timeoutFrom).getTime() +
+					info.timeoutSec * 1000 -
+					Date.now()) /
+				1000;
+			this.ttl.start(sandboxId, Math.max(remaining, 30), () =>
+				this.expire(sandboxId),
+			);
+			throw err;
+		}
 	}
 
-	/** Timeout handler: pause or kill as the sandbox's lifecycle says. */
+	/**
+	 * Timeout handler: pause or kill as the sandbox's lifecycle says. It queues
+	 * behind a pause or connect under way, then checks the deadline again: a
+	 * connect may have extended it meanwhile.
+	 */
 	async expire(sandboxId: string): Promise<void> {
 		try {
-			const found = await this.locate(sandboxId);
-			if (found?.info.state !== "running") return;
-			const { lifecycle } = found.info;
-			if (lifecycle.autoPause && found.backend.supportsPause) {
-				await this.pause(sandboxId, lifecycle.keepMemory);
-			} else {
-				await this.kill(sandboxId);
-			}
+			await this.serialize(sandboxId, async () => {
+				const found = await this.locate(sandboxId);
+				if (found?.info.state !== "running") return;
+				const { info, backend } = found;
+				const remainingMs =
+					new Date(info.timeoutFrom).getTime() +
+					info.timeoutSec * 1000 -
+					Date.now();
+				if (remainingMs > 1000) return;
+				if (info.lifecycle.autoPause && backend.supportsPause) {
+					await this.pauseNow(sandboxId, info.lifecycle.keepMemory);
+				} else {
+					await this.kill(sandboxId);
+				}
+			});
 		} catch (err) {
 			console.error(`Timeout handling for ${sandboxId} failed:`, err);
 		}
@@ -424,7 +458,10 @@ export class SandboxService {
 		}
 		const { info, backend } = found;
 
-		await this.startAndInit(sandboxId, info, backend);
+		// A running sandbox only has its time extended: restarting it would
+		// re-initialize envd and, on Tart, drop open connections.
+		if (info.state === "running") registerToken(info.accessToken, sandboxId);
+		else await this.startAndInit(sandboxId, info, backend);
 
 		// Connecting only ever extends a running sandbox's time; a shorter
 		// request leaves its end time exactly as it was.
@@ -482,16 +519,16 @@ export class SandboxService {
 	 * Concurrent requests share one resume. Returns whether the sandbox runs.
 	 */
 	async resumeForTraffic(sandboxId: string): Promise<boolean> {
-		const { id, found } = await this.find(sandboxId);
-		sandboxId = id;
+		// Registered before any lookup, so concurrent requests share it.
 		const pending = this.resumes.get(sandboxId);
 		if (pending) return pending;
 
 		const resume = (async () => {
+			const { id, found } = await this.find(sandboxId);
 			if (!found) return false;
 			if (found.info.state === "running") return true;
 			if (!found.info.lifecycle.autoResume) return false;
-			await this.connect(sandboxId, found.info.timeoutSec);
+			await this.connect(id, found.info.timeoutSec);
 			return true;
 		})().finally(() => this.resumes.delete(sandboxId));
 		this.resumes.set(sandboxId, resume);
@@ -737,11 +774,15 @@ export class SandboxService {
 			startedAfter?: string;
 		} = {},
 	) {
-		const states = new Set(
-			[filters.state ?? []]
-				.flat()
-				.filter((s) => s === "running" || s === "paused"),
-		);
+		const requested = [filters.state ?? []].flat();
+		const unknown = requested.filter((s) => s !== "running" && s !== "paused");
+		if (unknown.length > 0) {
+			// Filtering them out would list every sandbox instead of none.
+			throw new UnsupportedError(
+				`Unknown sandbox state ${unknown.join(", ")}; use running or paused`,
+			);
+		}
+		const states = new Set(requested);
 		const results = await Promise.all(
 			this.allBackends.map(async (backend) =>
 				(await backend.listSandboxes()).map((info) => ({ info, backend })),

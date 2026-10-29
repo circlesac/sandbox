@@ -191,10 +191,12 @@ export async function handleProxyRequest(
 	if (resolved instanceof Response) return resolved;
 
 	if (route.port === config.envdPort) {
-		// envd routes the decoded path, so check that, or "/%69nit" would pass.
-		const requestPath = posix.normalize(
-			safeDecode(new URL(c.req.url).pathname),
-		);
+		// envd routes the decoded path, so check that, or "/%69nit" would pass;
+		// trailing slashes go too, or "/init/" would.
+		const requestPath =
+			posix
+				.normalize(safeDecode(new URL(c.req.url).pathname))
+				.replace(/\/+$/, "") || "/";
 		if (INTERNAL_ENVD_PATHS.has(requestPath)) {
 			return c.json(
 				{

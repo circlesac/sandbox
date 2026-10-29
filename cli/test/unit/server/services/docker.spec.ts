@@ -117,14 +117,16 @@ describe("DockerService timeout anchor", () => {
 		);
 
 		await expect(backend.stopContainer("sbx-test")).resolves.toBe(true);
-		inspect.mockResolvedValue(containerInfo("2026-07-28T01:00:00.000Z", false));
+		// Started again later: a refreshed timeout that was not cleared would
+		// show here (a stopped container's saved timeout is ignored anyway).
+		inspect.mockResolvedValue(containerInfo("2026-07-28T01:00:00.000Z"));
 		const restarted = new DockerService({
 			socketPath: "/var/run/docker.sock",
 			statePath,
 		});
 		const sandbox = await restarted.inspectSandbox("sbx-test");
 
-		expect(sandbox?.timeoutFrom).toBe("2026-07-28T00:00:00.000Z");
+		expect(sandbox?.timeoutFrom).toBe("2026-07-28T01:00:00.000Z");
 		expect(sandbox?.timeoutSec).toBe(300);
 	});
 

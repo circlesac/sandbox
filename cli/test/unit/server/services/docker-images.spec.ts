@@ -136,6 +136,15 @@ describe("DockerService image resolution", () => {
 		);
 	});
 
+	it("keeps a download failure's own message instead of calling it not found", async () => {
+		pull.mockImplementation((_name: string, cb: (err: Error) => void) =>
+			cb(new Error("dial tcp: lookup ghcr.io: no such host")),
+		);
+		const resolving = backend().resolveImage("base");
+		await expect(resolving).rejects.toThrow(/no such host/);
+		await expect(resolving).rejects.not.toBeInstanceOf(NotFoundError);
+	});
+
 	it("prefetches only when the image is not cached", async () => {
 		cached.add(REMOTE);
 		const docker = backend();

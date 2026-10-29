@@ -1,4 +1,4 @@
-import { exec, execSync } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
 import { createServer, type Socket } from "node:net";
 import { connect } from "node:net";
 import { config } from "../config.ts";
@@ -42,8 +42,10 @@ interface TartVm {
  */
 function tartExec(args: string[], timeoutMs = 10_000): Promise<string> {
 	return new Promise((resolve, reject) => {
-		exec(
-			`tart ${args.join(" ")}`,
+		// No shell: a VM name from `tart list` is passed as one argument.
+		execFile(
+			"tart",
+			args,
 			{ encoding: "utf-8", timeout: timeoutMs },
 			(err, stdout) => (err ? reject(err) : resolve(String(stdout).trim())),
 		);
@@ -423,7 +425,10 @@ export class TartBackend implements ContainerBackend {
 			}
 			await new Promise((r) => setTimeout(r, 500));
 		}
-		return true;
+		// Still running: the pause did not happen, so do not report a paused
+		// sandbox whose VM keeps running with no timeout.
+		instance.paused = false;
+		throw new Error(`Tart VM "${instance.vmName}" did not suspend or stop`);
 	}
 
 	async removeContainer(sandboxId: string): Promise<boolean> {

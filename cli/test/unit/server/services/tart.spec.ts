@@ -30,7 +30,13 @@ const execMock = vi.fn(
 );
 vi.mock("node:child_process", () => ({
 	execSync: (...args: unknown[]) => execSyncMock(...args),
-	exec: (...args: Parameters<typeof execMock>) => execMock(...args),
+	// The backend runs tart without a shell; record the command line it forms.
+	execFile: (
+		file: string,
+		args: string[],
+		opts: unknown,
+		cb: (err: Error | null, stdout?: string) => void,
+	) => execMock(`${file} ${args.join(" ")}`, opts, cb),
 }));
 
 // Mock net for port allocation and TCP proxy
@@ -283,6 +289,29 @@ describe("TartBackend", () => {
 			);
 		});
 
+		it("fails a pause when the VM neither suspends nor stops", async () => {
+			addInstance("sbx-stuck");
+			execSyncMock.mockImplementation((cmd: string) =>
+				cmd.startsWith("tart list")
+					? JSON.stringify([{ Name: "sandbox-sbx-stuck", State: "running" }])
+					: "",
+			);
+			vi.useRealTimers();
+			const originalSetTimeout = globalThis.setTimeout;
+			globalThis.setTimeout = ((fn: () => void) =>
+				originalSetTimeout(fn, 0)) as typeof setTimeout;
+			try {
+				await expect(backend.stopContainer("sbx-stuck")).rejects.toThrow(
+					/did not suspend or stop/,
+				);
+			} finally {
+				globalThis.setTimeout = originalSetTimeout;
+			}
+			expect((await backend.inspectSandbox("sbx-stuck"))?.state).toBe(
+				"running",
+			);
+		});
+
 		it("still cleans up a VM that stopped by itself", async () => {
 			addInstance("sbx-done");
 			execSyncMock.mockImplementation((cmd: string) =>
@@ -331,7 +360,7 @@ describe("TartBackend", () => {
 	});
 
 	describe("tart command execution", () => {
-		it("captures output with exec instead of leaking it to the parent console", async () => {
+		it("runs tart without a shell and captures its output", async () => {
 			execSyncMock.mockReturnValue(JSON.stringify([]));
 
 			await backend.listSandboxes();
