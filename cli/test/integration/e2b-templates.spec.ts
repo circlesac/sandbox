@@ -35,6 +35,25 @@ describe.skipIf(!opts)(
 			);
 		}, 120_000);
 
+		/** SDKs before fork() existed: call the API, then connect to each fork. */
+		async function forkWithoutSdk(sandboxId: string, count: number) {
+			const res = await fetch(`${url}/sandboxes/${sandboxId}/fork`, {
+				method: "POST",
+				headers: {
+					"X-API-Key": serverInfo?.apiKey ?? "",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ count }),
+			});
+			expect(res.status).toBe(201);
+			const results = (await res.json()) as {
+				sandbox?: { sandboxID: string };
+			}[];
+			return Promise.all(
+				results.map((r) => Sandbox.connect(r.sandbox?.sandboxID ?? "", opts)),
+			);
+		}
+
 		async function create(template = "base") {
 			const sandbox = await Sandbox.create(template, opts);
 			sandboxIds.push(sandbox.sandboxId);
@@ -91,45 +110,45 @@ describe.skipIf(!opts)(
 			expect(await res.text()).toContain("Memory snapshots are not supported");
 		});
 
-		it.skipIf(!("fork" in Sandbox.prototype))(
-			"forks a sandbox's files into new sandboxes",
-			async () => {
-				const source = await create();
-				await source.files.write("/home/user/fork.txt", "from the parent");
-				const forks = (await (
-					source as unknown as {
-						fork(o: { count: number }): Promise<unknown[]>;
-					}
-				).fork({ count: 2 })) as Sandbox[];
-				expect(forks).toHaveLength(2);
-				for (const fork of forks) {
-					expect(fork).toBeInstanceOf(Sandbox);
-					sandboxIds.push(fork.sandboxId);
-					expect(fork.sandboxId).not.toBe(source.sandboxId);
-					expect(await fork.files.read("/home/user/fork.txt")).toBe(
-						"from the parent",
-					);
-				}
+		it("forks a sandbox's files into new sandboxes", async () => {
+			const source = await create();
+			await source.files.write("/home/user/fork.txt", "from the parent");
+			const forks =
+				"fork" in Sandbox.prototype
+					? ((await (
+							source as unknown as {
+								fork(o: { count: number }): Promise<unknown[]>;
+							}
+						).fork({ count: 2 })) as Sandbox[])
+					: await forkWithoutSdk(source.sandboxId, 2);
+			expect(forks).toHaveLength(2);
+			for (const fork of forks) {
+				expect(fork).toBeInstanceOf(Sandbox);
+				sandboxIds.push(fork.sandboxId);
+				expect(fork.sandboxId).not.toBe(source.sandboxId);
+				expect(await fork.files.read("/home/user/fork.txt")).toBe(
+					"from the parent",
+				);
+			}
 
-				// The forks share one saved image, which exists only for them:
-				// it survives the first fork and goes with the last.
-				const docker = (...args: string[]) =>
-					spawnSync("docker", args, { encoding: "utf-8" });
-				const imageId = docker(
-					"inspect",
-					"--format",
-					"{{.Image}}",
-					forks[0]?.sandboxId ?? "",
-				).stdout.trim();
-				expect(imageId).toMatch(/^sha256:/);
-				const imageExists = () =>
-					docker("image", "inspect", imageId).status === 0;
-				await forks[0]?.kill();
-				expect(imageExists()).toBe(true);
-				await forks[1]?.kill();
-				expect(imageExists()).toBe(false);
-			},
-		);
+			// The forks share one saved image, which exists only for them:
+			// it survives the first fork and goes with the last.
+			const docker = (...args: string[]) =>
+				spawnSync("docker", args, { encoding: "utf-8" });
+			const imageId = docker(
+				"inspect",
+				"--format",
+				"{{.Image}}",
+				forks[0]?.sandboxId ?? "",
+			).stdout.trim();
+			expect(imageId).toMatch(/^sha256:/);
+			const imageExists = () =>
+				docker("image", "inspect", imageId).status === 0;
+			await forks[0]?.kill();
+			expect(imageExists()).toBe(true);
+			await forks[1]?.kill();
+			expect(imageExists()).toBe(false);
+		});
 
 		it("builds a template from the base template with run, copy, env, and a start command", async () => {
 			const context = mkdtempSync(join(tmpdir(), "sandbox-template-ctx-"));

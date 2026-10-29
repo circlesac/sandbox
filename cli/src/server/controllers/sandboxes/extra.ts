@@ -38,21 +38,49 @@ function listFilters(c: Context) {
 	};
 }
 
-/** Pages through a list with an opaque offset token, as E2B's x-next-token. */
-function page<T>(c: Context, items: T[]): T[] {
+/**
+ * Pages through a list sorted by `compare`, as E2B's x-next-token. The
+ * token holds the last item's sort key, not an offset, so a sandbox created
+ * or removed between pages neither repeats nor skips another.
+ */
+function page<T>(
+	c: Context,
+	items: T[],
+	compare: (a: T, b: T) => number,
+	keyOf: (item: T) => Partial<T>,
+): T[] {
 	const limit = Number(c.req.query("limit") ?? 0) || items.length;
 	const token = c.req.query("nextToken");
-	const offset = token
-		? Number(Buffer.from(token, "base64url").toString()) || 0
-		: 0;
-	const slice = items.slice(offset, offset + limit);
-	if (offset + limit < items.length) {
+	let rest = items;
+	if (token) {
+		let after: T;
+		try {
+			after = JSON.parse(Buffer.from(token, "base64url").toString()) as T;
+		} catch {
+			throw new UnsupportedError("Invalid nextToken");
+		}
+		rest = items.filter((item) => compare(item, after) > 0);
+	}
+	const slice = rest.slice(0, limit);
+	const last = slice[slice.length - 1];
+	if (last !== undefined && rest.length > limit) {
 		c.header(
 			"x-next-token",
-			Buffer.from(String(offset + limit)).toString("base64url"),
+			Buffer.from(JSON.stringify(keyOf(last))).toString("base64url"),
 		);
 	}
 	return slice;
+}
+
+/** The order SandboxService.list returns: newest first, then by ID. */
+function bySandboxOrder(
+	a: { startedAt: string; sandboxID: string },
+	b: { startedAt: string; sandboxID: string },
+) {
+	return (
+		b.startedAt.localeCompare(a.startedAt) ||
+		a.sandboxID.localeCompare(b.sandboxID)
+	);
 }
 
 export const ListSandboxesFiltered = endpoint(
@@ -76,7 +104,13 @@ export const ListSandboxesFiltered = endpoint(
 			"X-Total-Running",
 			String(all.filter((s) => s.state === "running").length),
 		);
-		return c.json(page(c, all), 200);
+		return c.json(
+			page(c, all, bySandboxOrder, ({ startedAt, sandboxID }) => ({
+				startedAt,
+				sandboxID,
+			})),
+			200,
+		);
 	},
 );
 
@@ -126,11 +160,20 @@ export const ListSnapshots = endpoint(
 	async (c) => {
 		if (!templates)
 			throw new UnsupportedError("Snapshots need the Docker backend");
-		const all = await templates.listSnapshots(
-			c.req.query("sandboxID"),
-			c.req.query("name"),
+		const bySnapshotId = (
+			a: { snapshotID: string },
+			b: { snapshotID: string },
+		) => a.snapshotID.localeCompare(b.snapshotID);
+		const all = (
+			await templates.listSnapshots(
+				c.req.query("sandboxID"),
+				c.req.query("name"),
+			)
+		).sort(bySnapshotId);
+		return c.json(
+			page(c, all, bySnapshotId, ({ snapshotID }) => ({ snapshotID })),
+			200,
 		);
-		return c.json(page(c, all), 200);
 	},
 );
 

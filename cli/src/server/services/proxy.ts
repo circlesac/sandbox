@@ -85,16 +85,20 @@ export function parseSandboxHost(host: string): ProxyRoute | null {
 }
 
 /**
- * The E2B SDK's debug mode sends this ID; map it to the only running sandbox.
- * Any other unknown ID is an error, never another sandbox.
+ * The E2B SDK's debug mode sends this ID. Map it to the sandbox whose access
+ * token the request carries, else to the only running sandbox. Any other
+ * unknown ID is an error, never another sandbox.
  */
 const DEBUG_SANDBOX_ID = "debug_sandbox_id";
 
 export async function resolveDebugSandbox(
 	sandboxId: string | undefined,
 	sandboxes: ProxySandboxes,
+	accessToken?: string,
 ): Promise<string | null> {
 	if (sandboxId && sandboxId !== DEBUG_SANDBOX_ID) return sandboxId;
+	const byToken = accessToken ? tokenCache.get(accessToken) : undefined;
+	if (byToken) return byToken;
 	const running = await sandboxes.list({ state: "running" });
 	return running.length === 1 && running[0] ? running[0].sandboxID : null;
 }

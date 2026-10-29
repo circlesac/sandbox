@@ -188,6 +188,21 @@ describe("TemplateService", () => {
 		);
 	});
 
+	it("accepts an upload URL's token for its own file hash only", async () => {
+		const { docker } = fakeDocker();
+		const service = new TemplateService(docker, filesDir);
+		const link = service.fileUploadLink("h1", "http://localhost:49982");
+		const token =
+			new URL(link.url ?? "").searchParams.get("token") ?? undefined;
+		await expect(
+			service.storeUpload("h2", token, new ArrayBuffer(1)),
+		).rejects.toBeInstanceOf(NotFoundError);
+		await service.storeUpload("h1", token, new ArrayBuffer(1));
+		expect(() =>
+			service.fileUploadLink("../../etc", "http://localhost:49982"),
+		).toThrow(UnsupportedError);
+	});
+
 	it("rejects an upload with the wrong token", async () => {
 		const { docker } = fakeDocker();
 		const service = new TemplateService(docker, filesDir);

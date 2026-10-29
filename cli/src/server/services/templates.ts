@@ -1,5 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import {
+	createHmac,
+	randomBytes,
+	randomUUID,
+	timingSafeEqual,
+} from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -72,7 +77,12 @@ export interface TemplateBuildStart {
  */
 export class TemplateService {
 	private builds = new Map<string, Build>();
-	private uploadToken = randomBytes(24).toString("hex");
+	/** Signs upload URLs; each token is valid for its one file hash only. */
+	private uploadSecret = randomBytes(32);
+
+	private uploadToken(hash: string): string {
+		return createHmac("sha256", this.uploadSecret).update(hash).digest("hex");
+	}
 
 	constructor(
 		private docker: DockerService,
@@ -110,12 +120,15 @@ export class TemplateService {
 
 	/** Where the SDK uploads a COPY step's files; present when already uploaded. */
 	fileUploadLink(hash: string, origin: string) {
+		if (!isValidFilesHash(hash)) {
+			throw new UnsupportedError(`Invalid files hash "${hash}"`);
+		}
 		const present = existsSync(this.filePath(hash));
 		return {
 			present,
 			url: present
 				? undefined
-				: `${origin}/template-files/${hash}?token=${this.uploadToken}`,
+				: `${origin}/template-files/${hash}?token=${this.uploadToken(hash)}`,
 		};
 	}
 
@@ -124,9 +137,14 @@ export class TemplateService {
 		token: string | undefined,
 		body: ArrayBuffer,
 	) {
-		if (token !== this.uploadToken)
+		if (!isValidFilesHash(hash) || !token) {
 			throw new NotFoundError("Unknown upload URL");
-		if (!isValidFilesHash(hash)) throw new NotFoundError("Unknown upload URL");
+		}
+		const expected = Buffer.from(this.uploadToken(hash));
+		const given = Buffer.from(token);
+		if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+			throw new NotFoundError("Unknown upload URL");
+		}
 		mkdirSync(this.filesDir, { recursive: true });
 		const temp = `${this.filePath(hash)}.${nanoid()}.tmp`;
 		writeFileSync(temp, Buffer.from(body));

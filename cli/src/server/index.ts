@@ -60,7 +60,11 @@ if (config.port !== config.envdProxyPort) {
 			}
 		}
 
-		const finalId = await resolveDebugSandbox(sandboxId, sandboxService);
+		const finalId = await resolveDebugSandbox(
+			sandboxId,
+			sandboxService,
+			c.req.header("X-Access-Token"),
+		);
 		if (!finalId) {
 			return c.json({ code: 502, message: "No running sandbox found" }, 502);
 		}

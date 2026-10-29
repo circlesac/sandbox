@@ -380,8 +380,14 @@ describe("sandbox controllers", () => {
 	});
 
 	describe("GET /v2/sandboxes filters and pages", () => {
+		// Newest first, as SandboxService.list returns them.
 		const listed = (n: number) =>
-			Array.from({ length: n }, (_, i) => ({ sandboxID: `sbx-${i}` }));
+			Array.from({ length: n }, (_, i) => ({
+				sandboxID: `sbx-${i}`,
+				startedAt: new Date(Date.UTC(2026, 9, 28, 0, 0, 10 - i)).toISOString(),
+			}));
+		const ids = async (res: Response) =>
+			((await res.json()) as { sandboxID: string }[]).map((s) => s.sandboxID);
 
 		it("passes repeated or comma-separated state and URL-encoded metadata", async () => {
 			vi.mocked(service.list).mockResolvedValueOnce([]);
@@ -414,15 +420,45 @@ describe("sandbox controllers", () => {
 			const second = await app.request(
 				`/v2/sandboxes?limit=2&nextToken=${token}`,
 			);
-			expect(await second.json()).toEqual([
-				{ sandboxID: "sbx-2" },
-				{ sandboxID: "sbx-3" },
-			]);
+			expect(await ids(second)).toEqual(["sbx-2", "sbx-3"]);
 			const third = await app.request(
 				`/v2/sandboxes?limit=2&nextToken=${second.headers.get("x-next-token")}`,
 			);
-			expect(await third.json()).toEqual([{ sandboxID: "sbx-4" }]);
+			expect(await ids(third)).toEqual(["sbx-4"]);
 			expect(third.headers.get("x-next-token")).toBeNull();
+		});
+
+		it("neither repeats nor skips when sandboxes come and go between pages", async () => {
+			const all = listed(5);
+			vi.mocked(service.list).mockResolvedValue(all as never);
+			const first = await app.request("/v2/sandboxes?limit=2");
+			expect(await ids(first)).toEqual(["sbx-0", "sbx-1"]);
+
+			// A new sandbox arrives at the front: an offset would repeat sbx-1.
+			const newest = {
+				sandboxID: "sbx-new",
+				startedAt: "2026-10-28T00:01:00.000Z",
+			};
+			vi.mocked(service.list).mockResolvedValue([newest, ...all] as never);
+			const second = await app.request(
+				`/v2/sandboxes?limit=2&nextToken=${first.headers.get("x-next-token")}`,
+			);
+			expect(await ids(second)).toEqual(["sbx-2", "sbx-3"]);
+
+			// sbx-2 (on the page just served) goes: an offset would skip sbx-4.
+			vi.mocked(service.list).mockResolvedValue(
+				all.filter((s) => s.sandboxID !== "sbx-2") as never,
+			);
+			const third = await app.request(
+				`/v2/sandboxes?limit=2&nextToken=${second.headers.get("x-next-token")}`,
+			);
+			expect(await ids(third)).toEqual(["sbx-4"]);
+		});
+
+		it("rejects a nextToken it did not issue", async () => {
+			vi.mocked(service.list).mockResolvedValue(listed(3) as never);
+			const res = await app.request("/v2/sandboxes?limit=2&nextToken=%%%");
+			expect(res.status).toBe(400);
 		});
 	});
 

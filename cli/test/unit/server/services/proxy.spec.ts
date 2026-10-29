@@ -23,6 +23,7 @@ import {
 	parseSandboxHost,
 	type ProxyRoute,
 	type ProxySandboxes,
+	registerToken,
 	resolveDebugSandbox,
 } from "../../../../src/server/services/proxy.ts";
 import type { SandboxInfo } from "../../../../src/server/types.ts";
@@ -417,6 +418,20 @@ describe("resolveDebugSandbox", () => {
 
 		sandboxes.set("sbx-b", { state: "running", lifecycle: lifecycle() });
 		expect(await resolveDebugSandbox("debug_sandbox_id", deps)).toBeNull();
+	});
+
+	it("maps the placeholder to the sandbox whose access token the request carries", async () => {
+		const { sandboxes, deps } = setup(true);
+		sandboxes.set("sbx-a", { state: "running", lifecycle: lifecycle() });
+		sandboxes.set("sbx-b", { state: "running", lifecycle: lifecycle() });
+		registerToken("token-of-b", "sbx-b");
+		expect(
+			await resolveDebugSandbox("debug_sandbox_id", deps, "token-of-b"),
+		).toBe("sbx-b");
+		// A token of no sandbox does not pick one among several.
+		expect(
+			await resolveDebugSandbox("debug_sandbox_id", deps, "unknown"),
+		).toBeNull();
 	});
 
 	it("passes any other ID through unchanged, even when it does not exist", async () => {

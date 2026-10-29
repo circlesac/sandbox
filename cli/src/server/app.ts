@@ -63,7 +63,11 @@ export function createApp(opts?: {
 		// Route by the E2B SDK's E2b-Sandbox-Id / E2b-Sandbox-Port headers
 		const headerId = c.req.header("E2b-Sandbox-Id");
 		if (headerId) {
-			const sandboxId = await resolveDebugSandbox(headerId, sandboxService);
+			const sandboxId = await resolveDebugSandbox(
+				headerId,
+				sandboxService,
+				c.req.header("X-Access-Token"),
+			);
 			if (!sandboxId) {
 				return c.json({ code: 502, message: "No running sandbox found" }, 502);
 			}
