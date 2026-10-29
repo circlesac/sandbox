@@ -67,6 +67,13 @@ beforeAll(async () => {
 			body += chunk;
 		});
 		req.on("end", () => {
+			// A body cut off by the sandbox side, with and without a declared length.
+			if (req.url === "/cut-sized" || req.url === "/cut-stream") {
+				if (req.url === "/cut-sized") res.setHeader("content-length", "100");
+				res.write("0123456789");
+				setTimeout(() => res.socket?.destroy(), 20);
+				return;
+			}
 			received.push({ method: req.method ?? "", url: req.url ?? "", body });
 			res.setHeader("content-type", "text/plain");
 			res.end(`upstream ${req.method} ${req.url}`);
@@ -179,6 +186,29 @@ describe("handleProxyRequest", () => {
 		expect(received).toEqual([
 			{ method: "POST", url: "/api/x?y=1", body: "hello" },
 		]);
+	});
+
+	it("fails a body of declared length that the sandbox cut off, and ends an open stream", async () => {
+		const { sandboxes, request } = setup(true);
+		sandboxes.set("sbx-a", { state: "running", lifecycle: lifecycle() });
+
+		const whole = await request({ sandboxId: "sbx-a", port: 3000 }, "/x");
+		expect(whole.headers.get("content-length")).toBe(
+			String("upstream GET /x".length),
+		);
+		await whole.text();
+
+		const sized = await request(
+			{ sandboxId: "sbx-a", port: 3000 },
+			"/cut-sized",
+		);
+		await expect(sized.text()).rejects.toThrow();
+
+		const stream = await request(
+			{ sandboxId: "sbx-a", port: 3000 },
+			"/cut-stream",
+		);
+		expect(await stream.text()).toBe("0123456789");
 	});
 
 	it("ignores an E2B client-ID suffix after the sandbox ID", async () => {

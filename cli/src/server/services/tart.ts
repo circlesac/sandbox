@@ -18,6 +18,8 @@ interface TartInstance {
 	accessToken: string;
 	templateId: string;
 	createdAt: string;
+	/** Where the current timeout counts from: creation, or the last extension. */
+	timeoutFrom: string;
 	timeoutSec: number;
 	metadata?: Record<string, string>;
 	lifecycle: SandboxLifecycle;
@@ -119,6 +121,12 @@ export class TartBackend implements ContainerBackend {
 	// the control plane keeps checking as well.
 	readonly envdAcceptsAccessToken = true;
 	private instances = new Map<string, TartInstance>();
+	/**
+	 * VMs being cloned and booted. Until they run they list as stopped, and
+	 * the cleanup in listSandboxes must not mistake them for finished or
+	 * orphaned VMs (tart commands are async, so a list can run meanwhile).
+	 */
+	private starting = new Set<string>();
 
 	static isAvailable(): boolean {
 		try {
@@ -153,20 +161,34 @@ export class TartBackend implements ContainerBackend {
 	async createContainer(
 		opts: CreateContainerOpts,
 	): Promise<{ instanceId: string; hostPort: number }> {
-		const image = await this.resolveImage(opts.templateId);
 		const vmName = `sandbox-${opts.sandboxId}`;
+		this.starting.add(vmName);
+		try {
+			return await this.createVm(opts, vmName);
+		} finally {
+			this.starting.delete(vmName);
+		}
+	}
+
+	private async createVm(
+		opts: CreateContainerOpts,
+		vmName: string,
+	): Promise<{ instanceId: string; hostPort: number }> {
+		const image = await this.resolveImage(opts.templateId);
 
 		// Clone the template VM (APFS COW — instant, ~0.1s)
 		await tartExec(["clone", image, vmName], 120_000);
 
 		// Register instance immediately to prevent orphan cleanup from deleting it
+		const now = new Date().toISOString();
 		const instance: TartInstance = {
 			sandboxId: opts.sandboxId,
 			vmName,
 			hostPort: 0,
 			accessToken: opts.accessToken,
 			templateId: opts.templateId,
-			createdAt: new Date().toISOString(),
+			createdAt: now,
+			timeoutFrom: now,
 			timeoutSec: opts.timeoutSec,
 			metadata: opts.metadata,
 			lifecycle: opts.lifecycle,
@@ -356,7 +378,7 @@ export class TartBackend implements ContainerBackend {
 	refreshTimeout(sandboxId: string, timeoutSec: number): void {
 		const instance = this.instances.get(sandboxId);
 		if (!instance) return;
-		instance.createdAt = new Date().toISOString();
+		instance.timeoutFrom = new Date().toISOString();
 		instance.timeoutSec = timeoutSec;
 	}
 
@@ -443,7 +465,8 @@ export class TartBackend implements ContainerBackend {
 			instanceId: instance.vmName,
 			accessToken: instance.accessToken,
 			templateId: instance.templateId,
-			createdAt: instance.createdAt,
+			startedAt: instance.createdAt,
+			timeoutFrom: instance.timeoutFrom,
 			timeoutSec: instance.timeoutSec,
 			hostPort: instance.hostPort,
 			state,
@@ -468,7 +491,11 @@ export class TartBackend implements ContainerBackend {
 			}
 
 			// VM shut itself down (runner finished) → clean up
-			if (vm.state === "stopped" && !instance.paused) {
+			if (
+				vm.state === "stopped" &&
+				!instance.paused &&
+				!this.starting.has(instance.vmName)
+			) {
 				console.log(
 					`VM "${instance.vmName}" stopped (runner finished), cleaning up`,
 				);
@@ -490,7 +517,8 @@ export class TartBackend implements ContainerBackend {
 				instanceId: instance.vmName,
 				accessToken: instance.accessToken,
 				templateId: instance.templateId,
-				createdAt: instance.createdAt,
+				startedAt: instance.createdAt,
+				timeoutFrom: instance.timeoutFrom,
 				timeoutSec: instance.timeoutSec,
 				hostPort: instance.hostPort,
 				state,
@@ -507,7 +535,8 @@ export class TartBackend implements ContainerBackend {
 		for (const vm of vms) {
 			if (
 				vm.name.startsWith("sandbox-sbx-") &&
-				!this.instances.has(vm.name.replace("sandbox-", ""))
+				!this.instances.has(vm.name.replace("sandbox-", "")) &&
+				!this.starting.has(vm.name)
 			) {
 				if (vm.state === "stopped" || vm.state === "suspended") {
 					console.log(`Orphaned VM "${vm.name}" (${vm.state}), deleting`);

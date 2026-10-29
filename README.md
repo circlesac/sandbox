@@ -180,6 +180,7 @@ bun run smoke:pty
 Known differences that are not errors:
 
 - `getHost(port)` returns `<port>-<sandboxId>.<host the client used>`, for example `3000-sbx-abc.localhost:49982`. Browsers and curl resolve `*.localhost`; behind a public hostname, the extra subdomain level needs a wildcard certificate that covers it, so header routing (`E2b-Sandbox-Id` and `E2b-Sandbox-Port`) is the dependable route.
+- On Docker, sandboxes share one bridge network, so a service listening on all interfaces in one sandbox is reachable from another sandbox, and `allowPublicTraffic: false` guards only the proxy. A port that listens only on loopback is forwarded for the proxy alone; other sandboxes are refused.
 - WebSocket upgrades to sandbox ports are not proxied.
 - The `Idempotency-Key` header on create is not honored; a retried create can start a second sandbox.
 - Sandboxes created before lifecycles were recorded keep their old behavior: pause by stopping on timeout.

@@ -30,8 +30,10 @@ type State = "running" | "frozen" | "stopped";
 interface FakeSandbox {
 	opts: CreateContainerOpts;
 	state: State;
+	/** Creation time, fixed. */
+	createdAt: number;
 	/** Timeout anchor, like Docker's persisted start time. */
-	startedAt: number;
+	timeoutFrom: number;
 	timeoutSec: number;
 }
 
@@ -59,17 +61,22 @@ class FakeBackend implements ContainerBackend {
 		this.sandboxes.set(opts.sandboxId, {
 			opts,
 			state: "running",
-			startedAt: Date.now(),
+			createdAt: Date.now(),
+			timeoutFrom: Date.now(),
 			timeoutSec: opts.timeoutSec,
 		});
 		this.events.push(`create ${opts.sandboxId}`);
 		return { instanceId: opts.sandboxId, hostPort: 40000 };
 	}
 
+	/** While set, a start waits for it, like a slow resume. */
+	startGate: Promise<void> | null = null;
+
 	async startContainer(sandboxId: string) {
+		if (this.startGate) await this.startGate;
 		const sb = this.sandboxes.get(sandboxId);
 		if (!sb) throw new Error("gone");
-		if (sb.state === "stopped") sb.startedAt = Date.now();
+		if (sb.state === "stopped") sb.timeoutFrom = Date.now();
 		sb.state = "running";
 		this.events.push(`start ${sandboxId}`);
 		return { hostPort: 40001 };
@@ -87,11 +94,15 @@ class FakeBackend implements ContainerBackend {
 	refreshTimeout(sandboxId: string, timeoutSec: number) {
 		const sb = this.sandboxes.get(sandboxId);
 		if (!sb) return;
-		sb.startedAt = Date.now();
+		sb.timeoutFrom = Date.now();
 		sb.timeoutSec = timeoutSec;
 	}
 
+	/** While set, a pause waits for it, like a slow docker stop. */
+	stopGate: Promise<void> | null = null;
+
 	async stopContainer(sandboxId: string, opts: { keepMemory?: boolean } = {}) {
+		if (this.stopGate) await this.stopGate;
 		const sb = this.sandboxes.get(sandboxId);
 		if (!sb) return false;
 		sb.state = opts.keepMemory ? "frozen" : "stopped";
@@ -104,7 +115,11 @@ class FakeBackend implements ContainerBackend {
 		return this.sandboxes.delete(sandboxId);
 	}
 
+	/** How many times a sandbox was looked up, as Docker inspects would be. */
+	inspections = 0;
+
 	async inspectSandbox(sandboxId: string): Promise<SandboxInfo | null> {
+		this.inspections++;
 		const sb = this.sandboxes.get(sandboxId);
 		if (!sb) return null;
 		return {
@@ -112,7 +127,8 @@ class FakeBackend implements ContainerBackend {
 			instanceId: sandboxId,
 			accessToken: sb.opts.accessToken,
 			templateId: sb.opts.templateId,
-			createdAt: new Date(sb.startedAt).toISOString(),
+			startedAt: new Date(sb.createdAt).toISOString(),
+			timeoutFrom: new Date(sb.timeoutFrom).toISOString(),
 			timeoutSec: sb.timeoutSec,
 			hostPort: 40000,
 			state: sb.state === "running" ? "running" : "paused",
@@ -340,7 +356,7 @@ describe("SandboxService", () => {
 		it("re-arms running sandboxes from the persisted anchor and expires overdue ones", async () => {
 			const fresh = await service.create({ timeout: 100 });
 			const overdue = await service.create({ timeout: 100, autoPause: true });
-			backend.get(overdue.sandboxID).startedAt -= 200_000;
+			backend.get(overdue.sandboxID).timeoutFrom -= 200_000;
 			ttl.clearAll();
 
 			// A new process with no timers and no memory of the sandboxes.
@@ -353,6 +369,31 @@ describe("SandboxService", () => {
 			expect(backend.stateOf(fresh.sandboxID)).toBe("running");
 			await vi.advanceTimersByTimeAsync(1);
 			expect(backend.stateOf(fresh.sandboxID)).toBe("removed");
+		});
+
+		it("leaves a sandbox that is still booting alone, and times it from when it is ready", async () => {
+			let ready = () => {};
+			envd.waitForHealth.mockImplementationOnce(
+				() =>
+					new Promise<void>((r) => {
+						ready = r;
+					}),
+			);
+			const creating = service.create({ timeout: 10 });
+			await vi.advanceTimersByTimeAsync(0);
+			const [booting] = [...backend.sandboxes.keys()];
+
+			// A reconcile during the boot arms nothing for it.
+			expect(await service.reconcile()).toBe(0);
+			await vi.advanceTimersByTimeAsync(15_000);
+			expect(backend.stateOf(booting ?? "")).toBe("running");
+
+			ready();
+			await creating;
+			await vi.advanceTimersByTimeAsync(9_999);
+			expect(backend.stateOf(booting ?? "")).toBe("running");
+			await vi.advanceTimersByTimeAsync(1);
+			expect(backend.stateOf(booting ?? "")).toBe("removed");
 		});
 
 		it("reconciling again does not touch paused sandboxes or loop", async () => {
@@ -422,6 +463,49 @@ describe("SandboxService", () => {
 			await expect(service.pause(sandboxID)).rejects.toBeInstanceOf(
 				ConflictError,
 			);
+		});
+
+		it("lets a connect during a pause resume the sandbox after the pause", async () => {
+			const { sandboxID } = await service.create({});
+			let release = () => {};
+			backend.stopGate = new Promise((r) => {
+				release = r;
+			});
+
+			const pausing = service.pause(sandboxID);
+			const connecting = service.connect(sandboxID, 60);
+			await vi.advanceTimersByTimeAsync(0);
+			release();
+			backend.stopGate = null;
+			await Promise.all([pausing, connecting]);
+
+			expect(backend.stateOf(sandboxID)).toBe("running");
+			expect(backend.events.slice(-2)).toEqual([
+				`frozen ${sandboxID}`,
+				`start ${sandboxID}`,
+			]);
+		});
+
+		it("lets a pause during a resume freeze the sandbox after the resume", async () => {
+			const { sandboxID } = await service.create({});
+			await service.pause(sandboxID);
+			let release = () => {};
+			backend.startGate = new Promise((r) => {
+				release = r;
+			});
+
+			const connecting = service.connect(sandboxID, 60);
+			await vi.advanceTimersByTimeAsync(0);
+			const pausing = service.pause(sandboxID);
+			release();
+			backend.startGate = null;
+			await Promise.all([connecting, pausing]);
+
+			expect(backend.stateOf(sandboxID)).toBe("frozen");
+			expect(backend.events.slice(-2)).toEqual([
+				`start ${sandboxID}`,
+				`frozen ${sandboxID}`,
+			]);
 		});
 
 		it("rejects changing the timeout of a paused sandbox", async () => {
@@ -594,6 +678,46 @@ describe("SandboxService", () => {
 				await ids({ startedAfter: new Date(Date.now() + 1_000).toISOString() }),
 			).toEqual([]);
 			expect(await ids({ template: "base" })).toEqual([old.sandboxID]);
+		});
+	});
+
+	describe("lookups", () => {
+		it("inspect a sandbox once per call", async () => {
+			const { sandboxID } = await service.create({});
+			const count = async (call: () => Promise<unknown>) => {
+				backend.inspections = 0;
+				await call();
+				return backend.inspections;
+			};
+			expect(await count(() => service.getInfo(sandboxID))).toBe(1);
+			expect(await count(() => service.setTimeout(sandboxID, 60))).toBe(1);
+			expect(await count(() => service.connect(sandboxID, 60))).toBe(1);
+			// An ID with a client-ID suffix needs a second lookup, once.
+			expect(await count(() => service.getInfo(`${sandboxID}-6532622b`))).toBe(
+				2,
+			);
+		});
+	});
+
+	describe("startedAt", () => {
+		it("stays the creation time when the timeout is extended", async () => {
+			const first = await service.create({});
+			await vi.advanceTimersByTimeAsync(5_000);
+			const second = await service.create({});
+			const createdFirst = (await service.getInfo(first.sandboxID))?.startedAt;
+			await vi.advanceTimersByTimeAsync(5_000);
+			await service.setTimeout(first.sandboxID, 600);
+			const ids = async (filters: Parameters<SandboxService["list"]>[0]) =>
+				(await service.list(filters)).map((s) => s.sandboxID);
+
+			const info = await service.getInfo(first.sandboxID);
+			expect(info?.startedAt).toBe(createdFirst);
+			// The end time does move with the extension.
+			expect(Date.parse(info?.endAt ?? "")).toBe(Date.now() + 600_000);
+			expect(await ids({})).toEqual([second.sandboxID, first.sandboxID]);
+			expect(
+				await ids({ startedAfter: new Date(Date.now() - 1_000).toISOString() }),
+			).toEqual([]);
 		});
 	});
 

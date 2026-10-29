@@ -133,11 +133,15 @@ export class TemplateService {
 				"fromImageRegistry (private registry credentials)",
 			);
 		}
-		// The agent comes from whichever copy of the base template is present.
-		const envdImage = body.fromImage
+		// The image to build on (or, for a plain image, to take the agent from),
+		// resolved as Sandbox.create resolves a template: a snapshot's bare name
+		// means its "default" tag.
+		const baseImage = body.fromImage
 			? await this.docker.resolveImage("base")
-			: "";
-		const context = this.prepareContext(body, envdImage);
+			: body.fromTemplate
+				? await this.docker.resolveImage(body.fromTemplate)
+				: "";
+		const context = this.prepareContext(body, baseImage);
 		build.status = "building";
 		void this.runBuild(build, body, context);
 	}
@@ -249,18 +253,17 @@ export class TemplateService {
 	}
 
 	/** Writes the Dockerfile and unpacks each COPY step's upload into a build context. */
-	private prepareContext(body: TemplateBuildStart, envdImage: string): string {
+	private prepareContext(body: TemplateBuildStart, baseImage: string): string {
 		const dir = mkdtempSync(join(tmpdir(), "sandbox-template-"));
 		const lines: string[] = [];
 		let user = "root";
 
 		if (body.fromTemplate) {
-			const { repo, tag } = templateImage(body.fromTemplate);
-			lines.push(`FROM ${repo}:${tag}`);
+			lines.push(`FROM ${baseImage}`);
 		} else if (body.fromImage) {
 			// E2B injects its agent into any base image; take envd from the base template.
-			lines.push(`FROM ${body.fromImage}`);
-			lines.push(`COPY --from=${envdImage} /usr/bin/envd /usr/bin/envd`);
+			lines.push(`FROM ${oneLine(body.fromImage, "fromImage")}`);
+			lines.push(`COPY --from=${baseImage} /usr/bin/envd /usr/bin/envd`);
 			lines.push(
 				"RUN id -u user >/dev/null 2>&1 || useradd -m -s /bin/bash user 2>/dev/null || adduser -D -s /bin/sh user",
 			);
@@ -276,9 +279,11 @@ export class TemplateService {
 			const args = step.args ?? [];
 			switch (step.type) {
 				case "RUN": {
-					const [cmd, runAs] = args;
-					if (runAs) lines.push(`USER ${runAs}`);
-					lines.push(`RUN ${cmd}`);
+					const [cmd = "", runAs] = args;
+					// Exec form keeps a multi-line command (a heredoc, a script) one
+					// instruction; in shell form each line would be parsed as its own.
+					if (runAs) lines.push(`USER ${oneLine(runAs, "RUN user")}`);
+					lines.push(`RUN ${JSON.stringify(["/bin/sh", "-c", cmd])}`);
 					if (runAs) lines.push(`USER ${user}`);
 					break;
 				}
@@ -303,24 +308,30 @@ export class TemplateService {
 						);
 					}
 					lines.push(
-						`COPY ${owner ? `--chown=${owner} ` : ""}${JSON.stringify([`files/${step.filesHash}/${src}`, dest])}`,
+						`COPY ${owner ? `--chown=${oneLine(owner, "COPY owner")} ` : ""}${JSON.stringify([`files/${step.filesHash}/${src}`, dest])}`,
 					);
-					if (mode) lines.push(`RUN chmod ${mode} ${JSON.stringify(dest)}`);
+					if (mode) lines.push(`RUN ${JSON.stringify(["chmod", mode, dest])}`);
 					break;
 				}
 				case "ENV": {
 					const pairs: string[] = [];
 					for (let i = 0; i + 1 < args.length; i += 2) {
-						pairs.push(`${args[i]}=${JSON.stringify(args[i + 1])}`);
+						const key = args[i] ?? "";
+						if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+							throw new UnsupportedError(
+								`Step ${index + 1}: invalid environment variable name "${key}"`,
+							);
+						}
+						pairs.push(`${key}=${JSON.stringify(args[i + 1])}`);
 					}
 					if (pairs.length > 0) lines.push(`ENV ${pairs.join(" ")}`);
 					break;
 				}
 				case "WORKDIR":
-					lines.push(`WORKDIR ${args[0]}`);
+					lines.push(`WORKDIR ${oneLine(args[0] ?? "", "WORKDIR")}`);
 					break;
 				case "USER":
-					user = args[0] ?? "root";
+					user = oneLine(args[0] ?? "root", "USER");
 					lines.push(`USER ${user}`);
 					break;
 				default:
@@ -398,4 +409,12 @@ function buildUuid(imageId: string): string {
 		hex.slice(16, 20),
 		hex.slice(20),
 	].join("-");
+}
+
+/** A value for a Dockerfile instruction that has no quoted form; a line break would start another instruction. */
+function oneLine(value: string, what: string): string {
+	if (/[\r\n]/.test(value)) {
+		throw new UnsupportedError(`${what} must not contain a line break`);
+	}
+	return value;
 }

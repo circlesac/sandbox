@@ -85,7 +85,7 @@ describe("DockerService timeout anchor", () => {
 
 		const sandboxes = await backend.listSandboxes({ state: "running" });
 
-		expect(sandboxes[0]?.createdAt).toBe("2026-07-28T01:00:00.000Z");
+		expect(sandboxes[0]?.timeoutFrom).toBe("2026-07-28T01:00:00.000Z");
 		expect(inspect).toHaveBeenCalledOnce();
 	});
 
@@ -102,7 +102,9 @@ describe("DockerService timeout anchor", () => {
 		});
 		const sandbox = await restarted.inspectSandbox("sbx-test");
 
-		expect(sandbox?.createdAt).toBe("2026-07-28T02:00:00.000Z");
+		expect(sandbox?.timeoutFrom).toBe("2026-07-28T02:00:00.000Z");
+		// The creation time does not move with the timeout.
+		expect(sandbox?.startedAt).toBe("2026-07-28T00:00:00.000Z");
 		expect(sandbox?.timeoutSec).toBe(900);
 	});
 
@@ -122,7 +124,7 @@ describe("DockerService timeout anchor", () => {
 		});
 		const sandbox = await restarted.inspectSandbox("sbx-test");
 
-		expect(sandbox?.createdAt).toBe("2026-07-28T00:00:00.000Z");
+		expect(sandbox?.timeoutFrom).toBe("2026-07-28T00:00:00.000Z");
 		expect(sandbox?.timeoutSec).toBe(300);
 	});
 

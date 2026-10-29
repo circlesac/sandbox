@@ -110,6 +110,24 @@ describe.skipIf(!opts)(
 						"from the parent",
 					);
 				}
+
+				// The forks share one saved image, which exists only for them:
+				// it survives the first fork and goes with the last.
+				const docker = (...args: string[]) =>
+					spawnSync("docker", args, { encoding: "utf-8" });
+				const imageId = docker(
+					"inspect",
+					"--format",
+					"{{.Image}}",
+					forks[0]?.sandboxId ?? "",
+				).stdout.trim();
+				expect(imageId).toMatch(/^sha256:/);
+				const imageExists = () =>
+					docker("image", "inspect", imageId).status === 0;
+				await forks[0]?.kill();
+				expect(imageExists()).toBe(true);
+				await forks[1]?.kill();
+				expect(imageExists()).toBe(false);
 			},
 		);
 
@@ -122,6 +140,8 @@ describe.skipIf(!opts)(
 			const template = Template({ fileContextPath: context })
 				.fromTemplate("base")
 				.runCmd("echo built > /home/user/built.txt")
+				// A multi-line command must stay one build step.
+				.runCmd("cat > /home/user/multi.txt <<'EOF'\nline one\nline two\nEOF")
 				.copy("greeting.txt", "/home/user/greeting.txt")
 				.setEnvs({ TEMPLATE_FLAVOR: "vanilla" })
 				.setStartCmd(
@@ -142,6 +162,9 @@ describe.skipIf(!opts)(
 			).toBe("built");
 			expect(await sandbox.files.read("/home/user/greeting.txt")).toBe(
 				"copied into the template",
+			);
+			expect(await sandbox.files.read("/home/user/multi.txt")).toBe(
+				"line one\nline two\n",
 			);
 			expect(
 				(await sandbox.commands.run("echo $TEMPLATE_FLAVOR")).stdout.trim(),

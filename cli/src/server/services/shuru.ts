@@ -17,6 +17,8 @@ interface ShruInstance {
 	accessToken: string;
 	templateId: string;
 	createdAt: string;
+	/** Where the current timeout counts from: creation, or the last extension. */
+	timeoutFrom: string;
 	timeoutSec: number;
 	metadata?: Record<string, string>;
 	lifecycle: SandboxLifecycle;
@@ -110,13 +112,15 @@ export class ShuruBackend implements ContainerBackend {
 			stdio: ["ignore", "ignore", "ignore"],
 		});
 
+		const now = new Date().toISOString();
 		const instance: ShruInstance = {
 			sandboxId: opts.sandboxId,
 			pid: proc.pid,
 			hostPort,
 			accessToken: opts.accessToken,
 			templateId: opts.templateId,
-			createdAt: new Date().toISOString(),
+			createdAt: now,
+			timeoutFrom: now,
 			timeoutSec: opts.timeoutSec,
 			metadata: opts.metadata,
 			lifecycle: opts.lifecycle,
@@ -141,7 +145,7 @@ export class ShuruBackend implements ContainerBackend {
 	refreshTimeout(sandboxId: string, timeoutSec: number): void {
 		const instance = this.instances.get(sandboxId);
 		if (!instance) return;
-		instance.createdAt = new Date().toISOString();
+		instance.timeoutFrom = new Date().toISOString();
 		instance.timeoutSec = timeoutSec;
 	}
 
@@ -206,7 +210,8 @@ export class ShuruBackend implements ContainerBackend {
 			instanceId: String(instance.pid),
 			accessToken: instance.accessToken,
 			templateId: instance.templateId,
-			createdAt: instance.createdAt,
+			startedAt: instance.createdAt,
+			timeoutFrom: instance.timeoutFrom,
 			timeoutSec: instance.timeoutSec,
 			hostPort: instance.hostPort,
 			state: "running",
@@ -235,7 +240,8 @@ export class ShuruBackend implements ContainerBackend {
 				instanceId: String(instance.pid),
 				accessToken: instance.accessToken,
 				templateId: instance.templateId,
-				createdAt: instance.createdAt,
+				startedAt: instance.createdAt,
+				timeoutFrom: instance.timeoutFrom,
 				timeoutSec: instance.timeoutSec,
 				hostPort: instance.hostPort,
 				state: "running",

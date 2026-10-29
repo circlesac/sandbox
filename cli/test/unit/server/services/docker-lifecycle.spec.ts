@@ -10,7 +10,8 @@ const container = {
 	running: true,
 	paused: false,
 	labels: {} as Record<string, string>,
-	image: "sandbox-base:latest",
+	imageId: "sha256:base",
+	imageName: "sandbox-base:latest",
 	ip: "172.17.0.5",
 	calls: [] as string[],
 };
@@ -20,7 +21,8 @@ function inspectInfo() {
 		Id: "c1",
 		Name: "/sbx-a",
 		Created: "2026-10-28T00:00:00.000Z",
-		Config: { Labels: container.labels, Image: container.image },
+		Image: container.imageId,
+		Config: { Labels: container.labels, Image: container.imageName },
 		State: {
 			Running: container.running,
 			Paused: container.paused,
@@ -63,11 +65,11 @@ vi.mock("dockerode", () => ({
 				},
 			};
 		}
-		getImage(name: string) {
+		getImage(id: string) {
 			return {
 				remove: async () => {
 					if (imageRemoveError) throw imageRemoveError;
-					removedImages.push(name);
+					removedImages.push(id);
 				},
 			};
 		}
@@ -176,13 +178,14 @@ describe("DockerService.removeContainer", () => {
 
 	it("removes a fork's image with its last fork, and only a fork's", async () => {
 		removedImages.length = 0;
-		container.image = "sandbox-base:latest";
 		await backend().removeContainer("sbx-a");
 		expect(removedImages).toEqual([]);
 
-		container.image = "sandbox-fork-abc123:latest";
+		// fork() has already dropped the image's name: it is removed by ID.
+		container.imageId = "sha256:fork";
+		container.imageName = "sandbox-fork-abc123:latest";
 		await backend().removeContainer("sbx-a");
-		expect(removedImages).toEqual(["sandbox-fork-abc123:latest"]);
+		expect(removedImages).toEqual(["sha256:fork"]);
 
 		// Docker refuses while a sibling fork still uses the image.
 		imageRemoveError = Object.assign(new Error("image is in use"), {
@@ -190,6 +193,7 @@ describe("DockerService.removeContainer", () => {
 		});
 		await expect(backend().removeContainer("sbx-a")).resolves.toBe(true);
 		imageRemoveError = null;
-		container.image = "sandbox-base:latest";
+		container.imageId = "sha256:base";
+		container.imageName = "sandbox-base:latest";
 	});
 });

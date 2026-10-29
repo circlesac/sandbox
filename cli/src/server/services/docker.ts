@@ -248,19 +248,24 @@ export class DockerService implements ContainerBackend {
 	}
 
 	private envdVersions = new Map<string, string | null>(); // image ID → version
+	private envdVersionBySandbox = new Map<string, string>(); // known, no inspect needed
 
-	/** The envd version in the sandbox's image, from `envd -version`, cached per image. */
+	/** The envd version in the sandbox's image, from `envd -version`, cached per image and sandbox. */
 	async envdVersion(sandboxId: string): Promise<string | null> {
+		const known = this.envdVersionBySandbox.get(sandboxId);
+		if (known) return known;
 		const info = await this.docker.getContainer(sandboxId).inspect();
-		const cached = this.envdVersions.get(info.Image);
-		if (cached !== undefined) return cached;
-		if (!info.State.Running || info.State.Paused) return null;
-		const output = await this.execOutput(sandboxId, [
-			"/usr/bin/envd",
-			"-version",
-		]);
-		const version = output.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
-		this.envdVersions.set(info.Image, version);
+		let version = this.envdVersions.get(info.Image);
+		if (version === undefined) {
+			if (!info.State.Running || info.State.Paused) return null;
+			const output = await this.execOutput(sandboxId, [
+				"/usr/bin/envd",
+				"-version",
+			]);
+			version = output.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
+			this.envdVersions.set(info.Image, version);
+		}
+		if (version) this.envdVersionBySandbox.set(sandboxId, version);
 		return version;
 	}
 
@@ -465,7 +470,7 @@ export class DockerService implements ContainerBackend {
 	async removeContainer(sandboxId: string): Promise<boolean> {
 		const container = this.docker.getContainer(sandboxId);
 		const image = await container.inspect().then(
-			(info) => info.Config.Image,
+			(info) => ({ name: info.Config.Image, id: info.Image }),
 			() => null,
 		);
 		try {
@@ -477,7 +482,11 @@ export class DockerService implements ContainerBackend {
 			return false;
 		}
 		this.clearTimeoutState(sandboxId);
-		await this.removeForkImage(image);
+		this.envdVersionBySandbox.delete(sandboxId);
+		// fork() drops the image's name at once; the container still records it.
+		if (image?.name.startsWith("sandbox-fork-")) {
+			await this.removeForkImage(image.id);
+		}
 		return true;
 	}
 
@@ -486,13 +495,12 @@ export class DockerService implements ContainerBackend {
 	 * them. Docker refuses (409) while another container, even a stopped one,
 	 * still uses it.
 	 */
-	private async removeForkImage(image: string | null) {
-		if (!image?.startsWith("sandbox-fork-")) return;
+	private async removeForkImage(imageId: string) {
 		try {
-			await this.docker.getImage(image).remove();
+			await this.docker.getImage(imageId).remove();
 		} catch (err: unknown) {
 			if (!isDockerNotFound(err) && !isDockerConflict(err)) {
-				console.warn(`Could not remove fork image ${image}: ${err}`);
+				console.warn(`Could not remove fork image ${imageId}: ${err}`);
 			}
 		}
 	}
@@ -648,7 +656,8 @@ export class DockerService implements ContainerBackend {
 			instanceId: info.Id,
 			accessToken: labels["e2b.access-token"] ?? "",
 			templateId: labels["e2b.template-id"] ?? "base",
-			createdAt:
+			startedAt: labels["e2b.created-at"] ?? info.Created,
+			timeoutFrom:
 				info.State.Running && !info.State.Paused
 					? (timeout?.startedAt ?? info.State.StartedAt)
 					: (labels["e2b.created-at"] ?? info.Created),
@@ -675,7 +684,8 @@ export class DockerService implements ContainerBackend {
 			instanceId: c.Id,
 			accessToken: labels["e2b.access-token"] ?? "",
 			templateId: labels["e2b.template-id"] ?? "base",
-			createdAt: labels["e2b.created-at"] ?? "",
+			startedAt: labels["e2b.created-at"] ?? "",
+			timeoutFrom: labels["e2b.created-at"] ?? "",
 			timeoutSec: Number(labels["e2b.timeout"] ?? config.defaultTimeoutSec),
 			hostPort: portMapping?.PublicPort ?? 0,
 			state: c.State === "running" ? "running" : "paused",

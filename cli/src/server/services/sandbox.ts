@@ -39,7 +39,10 @@ export class SandboxService {
 	private _sandboxPlatform = new Map<string, Platform>();
 	private resumes = new Map<string, Promise<boolean>>();
 	private pauses = new Map<string, Promise<boolean>>();
-	private connects = new Map<string, Promise<void>>();
+	/** Sandboxes still being created; their timeout starts once they are ready. */
+	private creating = new Set<string>();
+	/** The last pause or connect of each sandbox; the next one waits for it. */
+	private lifecycleOps = new Map<string, Promise<unknown>>();
 
 	constructor(
 		private backends: BackendMap,
@@ -90,10 +93,17 @@ export class SandboxService {
 	 * The stored ID for one a client sent. E2B clients may append an old client
 	 * ID (8 hex digits) after the sandbox ID: <sandboxId>-<clientId>.
 	 */
-	private async canonical(sandboxId: string): Promise<string> {
-		if (await this.locate(sandboxId)) return sandboxId;
+	private async find(sandboxId: string): Promise<{
+		id: string;
+		found: { info: SandboxInfo; backend: ContainerBackend } | null;
+	}> {
+		const found = await this.locate(sandboxId);
+		if (found) return { id: sandboxId, found };
 		const stripped = sandboxId.match(/^(.+)-[0-9a-f]{8}$/)?.[1];
-		return stripped && (await this.locate(stripped)) ? stripped : sandboxId;
+		const strippedFound = stripped ? await this.locate(stripped) : null;
+		return stripped && strippedFound
+			? { id: stripped, found: strippedFound }
+			: { id: sandboxId, found: null };
 	}
 
 	private prepare(req: CreateRequest) {
@@ -113,6 +123,18 @@ export class SandboxService {
 	}
 
 	private async boot(
+		req: CreateRequest,
+		p: ReturnType<SandboxService["prepare"]>,
+	): Promise<void> {
+		this.creating.add(p.sandboxId);
+		try {
+			await this.bootNow(req, p);
+		} finally {
+			this.creating.delete(p.sandboxId);
+		}
+	}
+
+	private async bootNow(
 		req: CreateRequest,
 		p: ReturnType<SandboxService["prepare"]>,
 	): Promise<void> {
@@ -260,8 +282,8 @@ export class SandboxService {
 	}
 
 	async getInfo(sandboxId: string) {
-		sandboxId = await this.canonical(sandboxId);
-		const found = await this.locate(sandboxId);
+		const { id, found } = await this.find(sandboxId);
+		sandboxId = id;
 		if (!found) return null;
 		return this.detail(
 			found.info,
@@ -276,9 +298,9 @@ export class SandboxService {
 			clientID: E2B_CLIENT_ID,
 			envdVersion,
 			domain: null,
-			startedAt: info.createdAt,
+			startedAt: info.startedAt,
 			endAt: new Date(
-				new Date(info.createdAt).getTime() + info.timeoutSec * 1000,
+				new Date(info.timeoutFrom).getTime() + info.timeoutSec * 1000,
 			).toISOString(),
 			metadata: info.metadata,
 			state: info.state,
@@ -289,13 +311,34 @@ export class SandboxService {
 	}
 
 	async kill(sandboxId: string): Promise<boolean> {
-		sandboxId = await this.canonical(sandboxId);
+		const { id, found } = await this.find(sandboxId);
+		sandboxId = id;
 		this.ttl.clear(sandboxId);
 		clearPortCache(sandboxId);
-		const found = await this.locate(sandboxId);
 		const backend = found?.backend ?? this.backendForSandbox(sandboxId);
 		const result = await backend.removeContainer(sandboxId);
 		this._sandboxPlatform.delete(sandboxId);
+		return result;
+	}
+
+	/**
+	 * Runs pauses and connects of one sandbox one after another, in the order
+	 * they arrived, so a connect cannot resume a sandbox that a pause still
+	 * under way then freezes, nor a pause freeze one mid-resume.
+	 */
+	private serialize<T>(sandboxId: string, op: () => Promise<T>): Promise<T> {
+		const previous = this.lifecycleOps.get(sandboxId) ?? Promise.resolve();
+		const result = previous.then(op, op);
+		const settled = result.then(
+			() => {},
+			() => {},
+		);
+		this.lifecycleOps.set(sandboxId, settled);
+		settled.then(() => {
+			if (this.lifecycleOps.get(sandboxId) === settled) {
+				this.lifecycleOps.delete(sandboxId);
+			}
+		});
 		return result;
 	}
 
@@ -304,13 +347,20 @@ export class SandboxService {
 	 * by default; false keeps only the filesystem.
 	 */
 	async pause(sandboxId: string, keepMemory = true): Promise<boolean> {
-		sandboxId = await this.canonical(sandboxId);
 		// Concurrent pauses of one sandbox share the first; a pause of a sandbox
 		// that is already paused is a conflict, as in E2B.
-		const found = await this.locate(sandboxId);
-		// Checked after the lookup, so a pause that started meanwhile is shared.
 		const pending = this.pauses.get(sandboxId);
 		if (pending) return pending;
+		const pause = this.serialize(sandboxId, () =>
+			this.pauseNow(sandboxId, keepMemory),
+		).finally(() => this.pauses.delete(sandboxId));
+		this.pauses.set(sandboxId, pause);
+		return pause;
+	}
+
+	private async pauseNow(sandboxId: string, keepMemory: boolean) {
+		const { id, found } = await this.find(sandboxId);
+		sandboxId = id;
 		if (!found) return false;
 		const { backend, info } = found;
 		if (!backend.supportsPause) {
@@ -326,13 +376,9 @@ export class SandboxService {
 		if (info.state === "paused") {
 			throw new ConflictError(`Sandbox ${sandboxId} is already paused`);
 		}
-		const pause = (async () => {
-			this.ttl.clear(sandboxId);
-			clearRoutes(sandboxId);
-			return backend.stopContainer(sandboxId, { keepMemory });
-		})().finally(() => this.pauses.delete(sandboxId));
-		this.pauses.set(sandboxId, pause);
-		return pause;
+		this.ttl.clear(sandboxId);
+		clearRoutes(sandboxId);
+		return backend.stopContainer(sandboxId, { keepMemory });
 	}
 
 	/** Timeout handler: pause or kill as the sandbox's lifecycle says. */
@@ -356,11 +402,21 @@ export class SandboxService {
 		timeoutSec?: number,
 		ctx: RequestContext = {},
 	) {
-		sandboxId = await this.canonical(sandboxId);
 		const requested = this.timeoutWithinLimit(
 			timeoutSec ?? config.defaultTimeoutSec,
 		);
-		const found = await this.locate(sandboxId);
+		return this.serialize(sandboxId, () =>
+			this.connectNow(sandboxId, requested, ctx),
+		);
+	}
+
+	private async connectNow(
+		sandboxId: string,
+		requested: number,
+		ctx: RequestContext,
+	) {
+		const { id, found } = await this.find(sandboxId);
+		sandboxId = id;
 		if (!found) {
 			throw new NotFoundError(
 				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
@@ -368,30 +424,21 @@ export class SandboxService {
 		}
 		const { info, backend } = found;
 
-		// Concurrent connects share one resume.
-		let resuming = this.connects.get(sandboxId);
-		if (!resuming) {
-			resuming = this.startAndInit(sandboxId, info, backend).finally(() =>
-				this.connects.delete(sandboxId),
-			);
-			this.connects.set(sandboxId, resuming);
-		}
-		await resuming;
+		await this.startAndInit(sandboxId, info, backend);
 
 		// Connecting only ever extends a running sandbox's time; a shorter
 		// request leaves its end time exactly as it was.
 		const remaining =
 			info.state === "running"
-				? (new Date(info.createdAt).getTime() +
+				? (new Date(info.timeoutFrom).getTime() +
 						info.timeoutSec * 1000 -
 						Date.now()) /
 					1000
 				: 0;
+		// A paused sandbox has none left, so a resume always starts a new timeout.
 		if (requested > remaining) {
 			await backend.refreshTimeout?.(sandboxId, requested);
 			this.ttl.start(sandboxId, requested, () => this.expire(sandboxId));
-		} else if (info.state !== "running") {
-			this.ttl.start(sandboxId, remaining, () => this.expire(sandboxId));
 		}
 
 		return this.response(
@@ -435,12 +482,12 @@ export class SandboxService {
 	 * Concurrent requests share one resume. Returns whether the sandbox runs.
 	 */
 	async resumeForTraffic(sandboxId: string): Promise<boolean> {
-		sandboxId = await this.canonical(sandboxId);
+		const { id, found } = await this.find(sandboxId);
+		sandboxId = id;
 		const pending = this.resumes.get(sandboxId);
 		if (pending) return pending;
 
 		const resume = (async () => {
-			const found = await this.locate(sandboxId);
 			if (!found) return false;
 			if (found.info.state === "running") return true;
 			if (!found.info.lifecycle.autoResume) return false;
@@ -456,8 +503,8 @@ export class SandboxService {
 	 * Memory is not captured: a sandbox created from it starts its processes anew.
 	 */
 	async snapshot(sandboxId: string, opts: { name?: string; memory?: boolean }) {
-		sandboxId = await this.canonical(sandboxId);
-		const found = await this.locate(sandboxId);
+		const { id, found } = await this.find(sandboxId);
+		sandboxId = id;
 		if (!found)
 			throw new NotFoundError(
 				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
@@ -507,12 +554,12 @@ export class SandboxService {
 		opts: { timeout?: number; count?: number },
 		ctx: RequestContext = {},
 	) {
-		sandboxId = await this.canonical(sandboxId);
+		const { id, found } = await this.find(sandboxId);
+		sandboxId = id;
 		const count = opts.count ?? 1;
 		if (!Number.isInteger(count) || count < 1 || count > 100) {
 			throw new UnsupportedError("count must be an integer from 1 to 100");
 		}
-		const found = await this.locate(sandboxId);
 		if (!found)
 			throw new NotFoundError(
 				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
@@ -572,8 +619,8 @@ export class SandboxService {
 	 * the sandbox is paused.
 	 */
 	async metrics(sandboxId: string) {
-		sandboxId = await this.canonical(sandboxId);
-		const found = await this.locate(sandboxId);
+		const { id, found } = await this.find(sandboxId);
+		sandboxId = id;
 		if (!found)
 			throw new NotFoundError(
 				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
@@ -608,9 +655,9 @@ export class SandboxService {
 	}
 
 	async setTimeout(sandboxId: string, timeoutSec: number): Promise<void> {
-		sandboxId = await this.canonical(sandboxId);
+		const { id, found } = await this.find(sandboxId);
+		sandboxId = id;
 		const timeout = this.timeoutWithinLimit(timeoutSec, 0);
-		const found = await this.locate(sandboxId);
 		if (!found) {
 			throw new NotFoundError(
 				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
@@ -628,9 +675,9 @@ export class SandboxService {
 	 * shortens it (POST /sandboxes/{id}/refreshes).
 	 */
 	async refresh(sandboxId: string, durationSec: number): Promise<void> {
-		sandboxId = await this.canonical(sandboxId);
+		const { id, found } = await this.find(sandboxId);
+		sandboxId = id;
 		const duration = this.timeoutWithinLimit(durationSec, 0);
-		const found = await this.locate(sandboxId);
 		if (!found) {
 			throw new NotFoundError(
 				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
@@ -641,7 +688,7 @@ export class SandboxService {
 			throw new ConflictError(`Sandbox ${sandboxId} is paused`);
 		}
 		const remaining =
-			(new Date(info.createdAt).getTime() +
+			(new Date(info.timeoutFrom).getTime() +
 				info.timeoutSec * 1000 -
 				Date.now()) /
 			1000;
@@ -659,10 +706,16 @@ export class SandboxService {
 		const results = await Promise.all(
 			this.allBackends.map((b) => b.listSandboxes({ state: "running" })),
 		);
-		const sandboxes = results.flat();
+		// One still being created gets its timeout when it is ready, not now:
+		// counted from creation, it could pause or kill the sandbox mid-boot.
+		const sandboxes = results
+			.flat()
+			.filter((sb) => !this.creating.has(sb.sandboxId));
 		for (const sb of sandboxes) {
 			const remaining =
-				(new Date(sb.createdAt).getTime() + sb.timeoutSec * 1000 - Date.now()) /
+				(new Date(sb.timeoutFrom).getTime() +
+					sb.timeoutSec * 1000 -
+					Date.now()) /
 				1000;
 			if (remaining <= 0) {
 				await this.expire(sb.sandboxId);
@@ -710,11 +763,11 @@ export class SandboxService {
 			.filter(
 				({ info }) =>
 					!filters.startedAfter ||
-					Date.parse(info.createdAt) >= Date.parse(filters.startedAfter),
+					Date.parse(info.startedAt) >= Date.parse(filters.startedAfter),
 			)
 			.sort(
 				({ info: a }, { info: b }) =>
-					b.createdAt.localeCompare(a.createdAt) ||
+					b.startedAt.localeCompare(a.startedAt) ||
 					a.sandboxId.localeCompare(b.sandboxId),
 			);
 		return Promise.all(

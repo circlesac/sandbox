@@ -15,7 +15,12 @@ function fakeDocker(buildResult: () => void = () => {}) {
 	const built: { dockerfile: string; files: string[]; templateId: string }[] =
 		[];
 	const docker = {
-		resolveImage: vi.fn(async () => "ghcr.io/circlesac/sandbox-base:latest"),
+		// A snapshot named "snap" exists as its default tag, as Docker resolves it.
+		resolveImage: vi.fn(async (templateId: string) =>
+			templateId === "snap"
+				? "sandbox-snap:default"
+				: "ghcr.io/circlesac/sandbox-base:latest",
+		),
 		buildTemplate: vi.fn(
 			async (
 				dir: string,
@@ -72,6 +77,7 @@ describe("TemplateService", () => {
 			steps: [
 				{ type: "RUN", args: ["apt-get update"] },
 				{ type: "RUN", args: ["whoami > /tmp/who", "user"] },
+				{ type: "RUN", args: ["cat > /tmp/x <<EOF\nhello\nEOF"] },
 				{ type: "ENV", args: ["A", "1", "B", "two words"] },
 				{ type: "WORKDIR", args: ["/home/user/app"] },
 				{ type: "USER", args: ["user"] },
@@ -84,15 +90,17 @@ describe("TemplateService", () => {
 
 		expect(status.status).toBe("ready");
 		expect(built[0]?.dockerfile.split("\n")).toEqual([
-			"FROM sandbox-base:latest",
-			"RUN apt-get update",
+			"FROM ghcr.io/circlesac/sandbox-base:latest",
+			'RUN ["/bin/sh","-c","apt-get update"]',
 			"USER user",
-			"RUN whoami > /tmp/who",
+			'RUN ["/bin/sh","-c","whoami > /tmp/who"]',
 			"USER root",
+			// A multi-line command stays one instruction.
+			'RUN ["/bin/sh","-c","cat > /tmp/x <<EOF\\nhello\\nEOF"]',
 			'ENV A="1" B="two words"',
 			"WORKDIR /home/user/app",
 			"USER user",
-			"RUN echo as user",
+			'RUN ["/bin/sh","-c","echo as user"]',
 			"USER root",
 			'LABEL e2b.start-cmd="npm start"',
 			'LABEL e2b.ready-cmd="curl -sf localhost:3000"',
@@ -102,6 +110,17 @@ describe("TemplateService", () => {
 		]);
 		expect(status.logEntries.map((e) => e.message)).toContain(
 			"Step 1/1 : FROM x",
+		);
+	});
+
+	it("builds on a snapshot by its bare name, as Sandbox.create resolves it", async () => {
+		const { docker, built } = fakeDocker();
+		const service = new TemplateService(docker, filesDir);
+		const { templateID, buildID } = service.requestBuild({ name: "onsnap" });
+		await service.startBuild(templateID, buildID, { fromTemplate: "snap" });
+		await waitForStatus(service, templateID, buildID);
+		expect(built[0]?.dockerfile.split("\n")[0]).toBe(
+			"FROM sandbox-snap:default",
 		);
 	});
 
@@ -163,7 +182,9 @@ describe("TemplateService", () => {
 		expect(built[0]?.dockerfile).toContain(
 			'COPY --chown=user ["files/h1/app","/home/user/app"]',
 		);
-		expect(built[0]?.dockerfile).toContain('RUN chmod 0755 "/home/user/app"');
+		expect(built[0]?.dockerfile).toContain(
+			'RUN ["chmod","0755","/home/user/app"]',
+		);
 	});
 
 	it("rejects an upload with the wrong token", async () => {
@@ -190,6 +211,17 @@ describe("TemplateService", () => {
 				steps: [{ type: "COPY", args: ["a", "/a"], filesHash: "missing" }],
 			},
 			/files for a were not uploaded/,
+		],
+		[
+			{
+				fromTemplate: "base",
+				steps: [{ type: "WORKDIR", args: ["/a\nRUN x"] }],
+			},
+			/WORKDIR must not contain a line break/,
+		],
+		[
+			{ fromTemplate: "base", steps: [{ type: "ENV", args: ["A B", "1"] }] },
+			/invalid environment variable name "A B"/,
 		],
 	])("refuses to start a build that cannot work: %j", async (body, error) => {
 		const { docker } = fakeDocker();

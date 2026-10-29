@@ -7,6 +7,14 @@ command -v socat >/dev/null 2>&1 && command -v ss >/dev/null 2>&1 || exit 0
 
 addr=$(hostname -i 2>/dev/null | awk '{print $1}')
 [ -n "$addr" ] || exit 0
+# Only the host side (the sandbox proxy) may connect, never another sandbox on
+# the same bridge. Host traffic comes from the network's first two addresses,
+# which no container gets: the gateway on Linux, the network address on
+# OrbStack. A network created with a gateway elsewhere would refuse the proxy
+# too. Without the network, forward nothing.
+net=$(ip -4 route show scope link 2>/dev/null | awk '{print $1; exit}')
+[ -n "$net" ] || exit 0
+host_side="${net%/*}/31"
 state=/run/sandbox-portf
 mkdir -p "$state"
 
@@ -35,7 +43,7 @@ while true; do
 		"[::1]") target="TCP6:[::1]:$port" ;;
 		*) target="TCP4:$host:$port" ;;
 		esac
-		socat "TCP4-LISTEN:$port,bind=$addr,reuseaddr,fork" "$target" &
+		socat "TCP4-LISTEN:$port,bind=$addr,reuseaddr,fork,range=$host_side" "$target" &
 		echo $! >"$pidfile"
 	done <"$state/wanted"
 

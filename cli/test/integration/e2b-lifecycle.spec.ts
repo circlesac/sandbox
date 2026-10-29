@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { Sandbox } from "e2b";
@@ -154,6 +155,25 @@ describe.skipIf(!opts)("E2B lifecycle and ports", { timeout: 120_000 }, () => {
 			"the loopback-only server",
 		);
 		expect(await res.text()).toBe("loopback only");
+
+		// The forward admits the host side only, never another sandbox.
+		const address = spawnSync(
+			"docker",
+			[
+				"inspect",
+				"--format",
+				"{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+				sandbox.sandboxId,
+			],
+			{ encoding: "utf-8" },
+		).stdout.trim();
+		expect(address).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+		const neighbor = await Sandbox.create("base", opts);
+		created.push(neighbor.sandboxId);
+		const probe = await neighbor.commands.run(
+			`curl -s -m 5 -o /dev/null -w '%{http_code}' http://${address}:3210/ || true`,
+		);
+		expect(probe.stdout.trim()).not.toBe("200");
 	});
 
 	it("kills a sandbox on timeout by default and never brings it back", async () => {

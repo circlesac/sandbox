@@ -242,13 +242,18 @@ export async function handleProxyRequest(
 			duplex: "half",
 		});
 
-		// Stream response back — strip content-encoding since Bun's fetch
-		// auto-decompresses but keeps the header, causing double-decompress
+		// Bun's fetch decompresses an encoded body but keeps Content-Encoding
+		// and the encoded length, so both go. Otherwise the length stays, and
+		// the client can tell a body that was cut off.
 		const responseHeaders = new Headers(response.headers);
-		responseHeaders.delete("content-encoding");
-		responseHeaders.delete("content-length");
+		const decoded = responseHeaders.has("content-encoding");
+		if (decoded) {
+			responseHeaders.delete("content-encoding");
+			responseHeaders.delete("content-length");
+		}
+		const sized = responseHeaders.has("content-length");
 
-		return new Response(endOnUpstreamReset(response.body), {
+		return new Response(endOnUpstreamReset(response.body, sized), {
 			status: response.status,
 			statusText: response.statusText,
 			headers: responseHeaders,
@@ -265,12 +270,14 @@ export async function handleProxyRequest(
 }
 
 /**
- * Passes a response body through, ending it instead of raising when the
- * sandbox side drops the connection, as a long-running process stream does
- * when its sandbox is killed.
+ * Passes a response body through. When the sandbox side drops the
+ * connection, an open-ended stream (a long-running process's output when its
+ * sandbox is killed) just ends; a body of declared length fails, so a
+ * truncated file never reads as complete.
  */
 function endOnUpstreamReset(
 	body: ReadableStream<Uint8Array> | null,
+	sized: boolean,
 ): ReadableStream<Uint8Array> | null {
 	if (!body) return null;
 	const reader = body.getReader();
@@ -280,8 +287,9 @@ function endOnUpstreamReset(
 				const { done, value } = await reader.read();
 				if (done) controller.close();
 				else controller.enqueue(value);
-			} catch {
-				controller.close();
+			} catch (err) {
+				if (sized) controller.error(err);
+				else controller.close();
 			}
 		},
 		cancel(reason) {

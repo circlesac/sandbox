@@ -15,7 +15,10 @@ export interface SandboxInfo {
 	instanceId: string;
 	accessToken: string;
 	templateId: string;
-	createdAt: string;
+	/** When the sandbox was created; fixed for its life. */
+	startedAt: string;
+	/** Where its current timeout counts from: creation, or the last extension. */
+	timeoutFrom: string;
 	timeoutSec: number;
 	hostPort: number;
 	state: "running" | "paused";

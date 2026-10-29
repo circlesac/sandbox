@@ -382,6 +382,76 @@ describe("TartBackend", () => {
 		});
 	});
 
+	describe("a list while a VM is being created", () => {
+		it("does not delete the clone as orphaned or finished", async () => {
+			let ipFails = false;
+			execSyncMock.mockImplementation((cmd: string) => {
+				if (cmd.startsWith("tart list")) {
+					return JSON.stringify([
+						{ Name: "sandbox-base", State: "stopped" },
+						{ Name: "sandbox-sbx-new", State: "stopped" },
+					]);
+				}
+				if (cmd.startsWith("tart ip") && ipFails) throw new Error("no IP");
+				return "";
+			});
+			vi.spyOn(console, "log").mockImplementation(() => {});
+			vi.useRealTimers();
+			const originalSetTimeout = globalThis.setTimeout;
+			globalThis.setTimeout = ((fn: () => void) =>
+				originalSetTimeout(fn, 0)) as typeof setTimeout;
+			try {
+				// Cloned, not yet registered.
+				held.set("tart clone", () => {});
+				const creating = backend
+					.createContainer({
+						sandboxId: "sbx-new",
+						accessToken: "t",
+						templateId: "base",
+						timeoutSec: 300,
+						lifecycle: LEGACY_LIFECYCLE,
+					})
+					.catch(() => {});
+				await vi.waitFor(() => expect(held.get("tart clone")).toBeDefined());
+				await vi.waitFor(() =>
+					expect(execMock).toHaveBeenCalledWith(
+						"tart clone sandbox-base sandbox-sbx-new",
+						expect.anything(),
+						expect.any(Function),
+					),
+				);
+				await backend.listSandboxes();
+
+				// Registered and booting: tart still lists it as stopped.
+				held.set("tart ip", () => {});
+				held.get("tart clone")?.();
+				await vi.waitFor(() =>
+					expect(execMock).toHaveBeenCalledWith(
+						expect.stringMatching(/^tart ip/),
+						expect.anything(),
+						expect.any(Function),
+					),
+				);
+				await backend.listSandboxes();
+
+				expect(execSyncMock).not.toHaveBeenCalledWith(
+					expect.stringMatching(/^tart (delete|stop) sandbox-sbx-new/),
+					expect.anything(),
+				);
+
+				// Let the creation finish (it fails without an IP).
+				ipFails = true;
+				const release = held.get("tart ip");
+				held.clear();
+				release?.();
+				await creating;
+			} finally {
+				globalThis.setTimeout = originalSetTimeout;
+				held.clear();
+			}
+		});
+	});
+
 	describe("resuming when tart cannot start the VM", () => {
 		it("tries again, then reports tart's own error", async () => {
 			(backend as unknown as { instances: Map<string, unknown> }).instances.set(
