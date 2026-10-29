@@ -101,7 +101,9 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 
 	describe("Lifecycle", () => {
 		it("creates a sandbox", async () => {
-			sandbox = await Sandbox.create("base", opts);
+			// This sandbox lives for the whole suite, which can outlast the
+			// default 300 s (it took 406 s under coverage instrumentation).
+			sandbox = await Sandbox.create("base", { ...opts, timeoutMs: 1_800_000 });
 			expect(sandbox.sandboxId).toMatch(/^sbx-/);
 		});
 
