@@ -1,6 +1,15 @@
 import { execFile, execSync } from "node:child_process";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { connect } from "node:net";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { config } from "../config.ts";
 import type { SandboxInfo } from "../types.ts";
 import { UnsupportedError } from "../errors.ts";
@@ -11,10 +20,14 @@ import type {
 } from "./backend.ts";
 import type { SandboxLifecycle } from "./lifecycle.ts";
 
-interface TartInstance {
+/**
+ * What the server must remember about a sandbox to find its VM again after a
+ * restart. Kept in the state file; the proxy, its port, and the VM's address
+ * belong to one server process and are rebuilt when needed.
+ */
+interface TartStoredInstance {
 	sandboxId: string;
 	vmName: string;
-	hostPort: number;
 	accessToken: string;
 	templateId: string;
 	createdAt: string;
@@ -23,10 +36,73 @@ interface TartInstance {
 	timeoutSec: number;
 	metadata?: Record<string, string>;
 	lifecycle: SandboxLifecycle;
-	vmIp?: string;
 	/** Paused by this server, so a stopped VM is not a finished runner. */
 	paused?: boolean;
+}
+
+interface TartInstance extends TartStoredInstance {
+	hostPort: number;
+	vmIp?: string;
 	proxy?: ReturnType<typeof createServer>;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+	return (
+		!!value &&
+		typeof value === "object" &&
+		!Array.isArray(value) &&
+		Object.values(value).every((v) => typeof v === "string")
+	);
+}
+
+function isLifecycle(value: unknown): value is SandboxLifecycle {
+	if (!value || typeof value !== "object") return false;
+	const l = value as Record<string, unknown>;
+	return (
+		typeof l.autoPause === "boolean" &&
+		typeof l.keepMemory === "boolean" &&
+		typeof l.autoResume === "boolean" &&
+		typeof l.secure === "boolean" &&
+		(l.trafficAccessToken === null || typeof l.trafficAccessToken === "string")
+	);
+}
+
+function isDate(value: unknown): value is string {
+	return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
+/** Reads one state file entry, or nothing when it is not an instance. */
+function parseStoredInstance(value: unknown): TartStoredInstance | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const v = value as Record<string, unknown>;
+	if (
+		typeof v.sandboxId !== "string" ||
+		typeof v.vmName !== "string" ||
+		typeof v.accessToken !== "string" ||
+		typeof v.templateId !== "string" ||
+		!isDate(v.createdAt) ||
+		!isDate(v.timeoutFrom) ||
+		typeof v.timeoutSec !== "number" ||
+		!Number.isFinite(v.timeoutSec) ||
+		v.timeoutSec <= 0 ||
+		(v.metadata !== undefined && !isStringRecord(v.metadata)) ||
+		!isLifecycle(v.lifecycle) ||
+		(v.paused !== undefined && typeof v.paused !== "boolean")
+	) {
+		return undefined;
+	}
+	return {
+		sandboxId: v.sandboxId,
+		vmName: v.vmName,
+		accessToken: v.accessToken,
+		templateId: v.templateId,
+		createdAt: v.createdAt,
+		timeoutFrom: v.timeoutFrom,
+		timeoutSec: v.timeoutSec,
+		metadata: v.metadata,
+		lifecycle: v.lifecycle,
+		paused: v.paused,
+	};
 }
 
 interface TartVm {
@@ -129,6 +205,17 @@ export class TartBackend implements ContainerBackend {
 	 * orphaned VMs (tart commands are async, so a list can run meanwhile).
 	 */
 	private starting = new Set<string>();
+	private statePath: string | null;
+	/** Stored running VMs whose proxy is being rebuilt, so it is built once. */
+	private attaching = new Map<string, Promise<void>>();
+
+	constructor(opts: { statePath?: string | null } = {}) {
+		this.statePath =
+			opts.statePath === undefined
+				? join(homedir(), ".sandbox", "tart-instances.json")
+				: opts.statePath;
+		this.loadState();
+	}
 
 	static isAvailable(): boolean {
 		try {
@@ -196,6 +283,7 @@ export class TartBackend implements ContainerBackend {
 			lifecycle: opts.lifecycle,
 		};
 		this.instances.set(opts.sandboxId, instance);
+		this.persistState();
 
 		// Check if the cloned VM has a suspended state (for fast resume)
 		const isSuspended = await this.vmIsSuspended(vmName);
@@ -230,6 +318,7 @@ export class TartBackend implements ContainerBackend {
 		if (!vmIp) {
 			// Cleanup on failure
 			this.instances.delete(opts.sandboxId);
+			this.persistState();
 			try {
 				await tartExec(["stop", vmName]);
 			} catch {}
@@ -267,6 +356,7 @@ export class TartBackend implements ContainerBackend {
 
 		if (!envdReady) {
 			this.instances.delete(opts.sandboxId);
+			this.persistState();
 			try {
 				await tartExec(["stop", vmName]);
 			} catch {}
@@ -279,16 +369,47 @@ export class TartBackend implements ContainerBackend {
 			);
 		}
 
-		// Set up a local TCP proxy forwarding to the VM's envd port
+		// Forward envd through a local port (the instance was registered early
+		// to prevent orphan cleanup)
+		await this.attachProxy(instance, vmIp);
+
+		return { instanceId: vmName, hostPort: instance.hostPort };
+	}
+
+	/** Forwards localhost:<hostPort> to the VM's envd port, replacing any earlier proxy. */
+	private async attachProxy(
+		instance: TartInstance,
+		vmIp: string,
+	): Promise<void> {
+		instance.proxy?.close();
 		const hostPort = await findFreePort();
-		const proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
-
-		// Update instance with runtime info (was registered early to prevent orphan cleanup)
+		instance.proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
 		instance.hostPort = hostPort;
-		instance.proxy = proxy;
 		instance.vmIp = vmIp;
+	}
 
-		return { instanceId: vmName, hostPort };
+	/**
+	 * A running VM read from the state file has no proxy: the server that
+	 * built it is gone. Find the VM's address and forward envd again, once,
+	 * when the sandbox is first used. A paused VM waits for startContainer,
+	 * which rebuilds the proxy as it resumes.
+	 */
+	private async attachLoaded(instance: TartInstance): Promise<void> {
+		if (instance.proxy || instance.paused) return;
+		let pending = this.attaching.get(instance.sandboxId);
+		if (!pending) {
+			pending = (async () => {
+				const vmIp = await tartIp(instance.vmName, 3);
+				// Removed while the address was looked up: nothing to forward to.
+				if (!vmIp || this.instances.get(instance.sandboxId) !== instance)
+					return;
+				await this.attachProxy(instance, vmIp);
+			})()
+				.catch(() => {})
+				.finally(() => this.attaching.delete(instance.sandboxId));
+			this.attaching.set(instance.sandboxId, pending);
+		}
+		await pending;
 	}
 
 	async startContainer(sandboxId: string): Promise<{ hostPort: number }> {
@@ -358,14 +479,11 @@ export class TartBackend implements ContainerBackend {
 		}
 
 		// Recreate TCP proxy (previous one was closed on pause)
-		instance.proxy?.close();
-		const hostPort = await findFreePort();
-		instance.proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
-		instance.hostPort = hostPort;
-		instance.vmIp = vmIp;
+		await this.attachProxy(instance, vmIp);
 		instance.paused = false;
+		this.persistState();
 
-		return { hostPort };
+		return { hostPort: instance.hostPort };
 	}
 
 	/** envd goes through the local TCP proxy; other ports go to the VM's address. */
@@ -374,7 +492,9 @@ export class TartBackend implements ContainerBackend {
 		port: number,
 	): Promise<ProxyTarget | null> {
 		const instance = this.instances.get(sandboxId);
-		if (!instance?.vmIp || !instance.hostPort) return null;
+		if (!instance) return null;
+		await this.attachLoaded(instance);
+		if (!instance.vmIp || !instance.hostPort) return null;
 		if (port === config.envdPort) {
 			return { host: "localhost", port: instance.hostPort };
 		}
@@ -386,6 +506,7 @@ export class TartBackend implements ContainerBackend {
 		if (!instance) return;
 		instance.timeoutFrom = new Date().toISOString();
 		instance.timeoutSec = timeoutSec;
+		this.persistState();
 	}
 
 	async stopContainer(
@@ -403,6 +524,7 @@ export class TartBackend implements ContainerBackend {
 		instance.proxy?.close();
 		instance.proxy = undefined;
 		instance.paused = true;
+		this.persistState();
 
 		try {
 			await tartExec(["suspend", instance.vmName], 60_000);
@@ -432,6 +554,7 @@ export class TartBackend implements ContainerBackend {
 		// Still running: the pause did not happen, so do not report a paused
 		// sandbox whose VM keeps running with no timeout.
 		instance.paused = false;
+		this.persistState();
 		throw new Error(`Tart VM "${instance.vmName}" did not suspend or stop`);
 	}
 
@@ -451,6 +574,7 @@ export class TartBackend implements ContainerBackend {
 		} catch {}
 
 		this.instances.delete(sandboxId);
+		this.persistState();
 		return true;
 	}
 
@@ -463,11 +587,13 @@ export class TartBackend implements ContainerBackend {
 
 		if (!vm) {
 			this.instances.delete(sandboxId);
+			this.persistState();
 			return null;
 		}
 
 		const state: "running" | "paused" =
 			vm.state === "running" ? "running" : "paused";
+		if (state === "running") await this.attachLoaded(instance);
 
 		return {
 			sandboxId: instance.sandboxId,
@@ -539,8 +665,10 @@ export class TartBackend implements ContainerBackend {
 		for (const id of dead) {
 			this.instances.delete(id);
 		}
+		if (dead.length > 0) this.persistState();
 
-		// Clean orphaned VMs not in instance map (e.g. from previous process)
+		// Clean orphaned VMs: in neither the instance map (which includes the
+		// sandboxes read from the state file) nor the starting set.
 		for (const vm of vms) {
 			if (
 				vm.name.startsWith("sandbox-sbx-") &&
@@ -565,5 +693,51 @@ export class TartBackend implements ContainerBackend {
 		}
 
 		return results;
+	}
+
+	/**
+	 * Reads the sandboxes a previous server process left behind. Their VMs
+	 * are not checked here: the first listSandboxes drops any whose VM is
+	 * gone, and attachLoaded or startContainer reaches the rest when used.
+	 */
+	private loadState(): void {
+		if (!this.statePath || !existsSync(this.statePath)) return;
+		try {
+			const stored = JSON.parse(readFileSync(this.statePath, "utf8"));
+			if (!stored || typeof stored !== "object" || Array.isArray(stored))
+				return;
+			for (const value of Object.values(stored)) {
+				const instance = parseStoredInstance(value);
+				if (!instance) continue;
+				this.instances.set(instance.sandboxId, { ...instance, hostPort: 0 });
+			}
+		} catch (err) {
+			console.warn(
+				`Failed to read Tart state: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
+	private persistState(): void {
+		if (!this.statePath) return;
+		const stored: Record<string, TartStoredInstance> = {};
+		for (const [id, instance] of this.instances) {
+			stored[id] = {
+				sandboxId: instance.sandboxId,
+				vmName: instance.vmName,
+				accessToken: instance.accessToken,
+				templateId: instance.templateId,
+				createdAt: instance.createdAt,
+				timeoutFrom: instance.timeoutFrom,
+				timeoutSec: instance.timeoutSec,
+				metadata: instance.metadata,
+				lifecycle: instance.lifecycle,
+				paused: instance.paused,
+			};
+		}
+		mkdirSync(dirname(this.statePath), { recursive: true });
+		const tempPath = `${this.statePath}.tmp`;
+		writeFileSync(tempPath, `${JSON.stringify(stored, null, 2)}\n`);
+		renameSync(tempPath, this.statePath);
 	}
 }
