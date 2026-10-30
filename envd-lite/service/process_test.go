@@ -792,6 +792,69 @@ func TestStart_BackgroundChildDoesNotDelayEnd(t *testing.T) {
 	}
 }
 
+// A subscriber that stalls while the process exits must still receive every
+// byte: the drain after exit is bounded by reader progress, not by a fixed
+// delay, so output left in the pipe while the reader is held in publish is
+// delivered before End.
+func TestStart_SlowSubscriberGetsAllOutputBeforeEnd(t *testing.T) {
+	_, svc, stop := newProcessTestServer(t)
+	defer stop()
+
+	const total = 2 << 20
+	// Wait for stdin so the slow subscriber is attached before any output.
+	proc, sub, err := svc.spawn(&procpb.ProcessConfig{
+		Cmd: "/bin/sh", Args: []string{"-c", "read go && head -c 2097152 /dev/zero"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc.unsubscribe(sub)
+
+	// Unbuffered, so the reader is blocked in publish until the test takes
+	// each event, as a subscriber behind a full channel or a slow stream.Send is.
+	slow := &subscriber{ch: make(chan *procpb.ProcessEvent), gone: make(chan struct{})}
+	proc.mu.Lock()
+	proc.subs[slow] = struct{}{}
+	proc.mu.Unlock()
+	defer proc.unsubscribe(slow)
+
+	if _, err := proc.stdin.Write([]byte("go\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	received := 0
+	var end *procpb.ProcessEvent_EndEvent
+	deadline := time.After(20 * time.Second)
+	for end == nil {
+		select {
+		case ev := <-slow.ch:
+			switch e := ev.Event.(type) {
+			case *procpb.ProcessEvent_Data:
+				if s, ok := e.Data.Output.(*procpb.ProcessEvent_DataEvent_Stdout); ok {
+					received += len(s.Stdout)
+				}
+			case *procpb.ProcessEvent_End:
+				end = e.End
+			}
+		case <-deadline:
+			t.Fatalf("no end event; received %d of %d bytes", received, total)
+		}
+		// Over the last 12 KiB the rest of the output fits in the pipe, so the
+		// process exits while this stall holds the reader in publish for
+		// longer than the 200 ms idle window.
+		if end == nil && received >= total-12*1024 {
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+
+	if received != total {
+		t.Errorf("received %d bytes before End, want %d", received, total)
+	}
+	if end.ExitCode != 0 || !end.Exited {
+		t.Errorf("end=%+v want exit 0", end)
+	}
+}
+
 // streamReader adapts ServerStreamForClient to io.Reader for cleanup drains.
 type streamReader struct {
 	s *connect.ServerStreamForClient[procpb.StartResponse]
