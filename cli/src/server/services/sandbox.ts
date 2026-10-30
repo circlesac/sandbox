@@ -743,13 +743,17 @@ export class SandboxService {
 	 */
 	async reconcile(): Promise<number> {
 		const results = await Promise.all(
-			this.allBackends.map((b) => b.listSandboxes({ state: "running" })),
+			this.allBackends.map((b) => b.listSandboxes()),
 		);
+		const all = results.flat();
+		// The proxy finds a sandbox by its access token; after a restart that
+		// map is empty, so fill it from what the backends report.
+		for (const sb of all) registerToken(sb.accessToken, sb.sandboxId);
 		// One still being created gets its timeout when it is ready, not now:
 		// counted from creation, it could pause or kill the sandbox mid-boot.
-		const sandboxes = results
-			.flat()
-			.filter((sb) => !this.creating.has(sb.sandboxId));
+		const sandboxes = all.filter(
+			(sb) => sb.state === "running" && !this.creating.has(sb.sandboxId),
+		);
 		for (const sb of sandboxes) {
 			const remaining =
 				(new Date(sb.timeoutFrom).getTime() +

@@ -8,12 +8,13 @@ import { spawn, spawnSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
-	readdirSync,
+	mkdtempSync,
 	readFileSync,
+	readdirSync,
 	writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -132,6 +133,8 @@ async function main() {
 			PORT: String(port),
 			ENVD_PROXY_PORT: String(port),
 			API_KEYS: API_KEY,
+			// Never the user's ~/.sandbox state: this server would overwrite it.
+			SANDBOX_STATE_DIR: mkdtempSync(join(tmpdir(), "sandbox-state-")),
 		},
 		stdio: "ignore",
 	});

@@ -457,8 +457,17 @@ describe("sandbox controllers", () => {
 
 		it("rejects a nextToken it did not issue", async () => {
 			vi.mocked(service.list).mockResolvedValue(listed(3) as never);
-			const res = await app.request("/v2/sandboxes?limit=2&nextToken=%%%");
-			expect(res.status).toBe(400);
+			for (const token of [
+				"%%%",
+				// Well-formed JSON of the wrong shape: {} and null.
+				Buffer.from("{}").toString("base64url"),
+				Buffer.from("null").toString("base64url"),
+			]) {
+				const res = await app.request(
+					`/v2/sandboxes?limit=2&nextToken=${token}`,
+				);
+				expect(res.status).toBe(400);
+			}
 		});
 	});
 

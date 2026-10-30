@@ -53,13 +53,15 @@ function page<T>(
 	const token = c.req.query("nextToken");
 	let rest = items;
 	if (token) {
-		let after: T;
+		// Anything this server did not issue, malformed or of the wrong shape,
+		// is the client's error, not a 500 from the comparison.
 		try {
-			after = JSON.parse(Buffer.from(token, "base64url").toString()) as T;
+			const after = JSON.parse(Buffer.from(token, "base64url").toString()) as T;
+			if (!after || typeof after !== "object") throw new Error();
+			rest = items.filter((item) => compare(item, after) > 0);
 		} catch {
 			throw new UnsupportedError("Invalid nextToken");
 		}
-		rest = items.filter((item) => compare(item, after) > 0);
 	}
 	const slice = rest.slice(0, limit);
 	const last = slice[slice.length - 1];

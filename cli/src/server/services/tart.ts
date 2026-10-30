@@ -8,7 +8,6 @@ import {
 } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { connect } from "node:net";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { config } from "../config.ts";
 import type { SandboxInfo } from "../types.ts";
@@ -206,13 +205,15 @@ export class TartBackend implements ContainerBackend {
 	 */
 	private starting = new Set<string>();
 	private statePath: string | null;
+	/** Pauses under way; outside them a running VM is not paused, whatever the state file says. */
+	private pausing = new Set<string>();
 	/** Stored running VMs whose proxy is being rebuilt, so it is built once. */
 	private attaching = new Map<string, Promise<void>>();
 
 	constructor(opts: { statePath?: string | null } = {}) {
 		this.statePath =
 			opts.statePath === undefined
-				? join(homedir(), ".sandbox", "tart-instances.json")
+				? join(config.stateDir, "tart-instances.json")
 				: opts.statePath;
 		this.loadState();
 	}
@@ -394,6 +395,17 @@ export class TartBackend implements ContainerBackend {
 	 * when the sandbox is first used. A paused VM waits for startContainer,
 	 * which rebuilds the proxy as it resumes.
 	 */
+	/**
+	 * A running VM marked paused with no pause under way was being paused
+	 * when a previous server stopped: the suspend never happened. Treat it as
+	 * running again, or it would get no envd forwarding until it expired.
+	 */
+	private clearStalePause(instance: TartInstance): void {
+		if (!instance.paused || this.pausing.has(instance.sandboxId)) return;
+		instance.paused = false;
+		this.persistState();
+	}
+
 	private async attachLoaded(instance: TartInstance): Promise<void> {
 		if (instance.proxy || instance.paused) return;
 		let pending = this.attaching.get(instance.sandboxId);
@@ -513,6 +525,18 @@ export class TartBackend implements ContainerBackend {
 		sandboxId: string,
 		opts: { keepMemory?: boolean } = {},
 	): Promise<boolean> {
+		this.pausing.add(sandboxId);
+		try {
+			return await this.suspendVm(sandboxId, opts);
+		} finally {
+			this.pausing.delete(sandboxId);
+		}
+	}
+
+	private async suspendVm(
+		sandboxId: string,
+		opts: { keepMemory?: boolean },
+	): Promise<boolean> {
 		const instance = this.instances.get(sandboxId);
 		if (!instance) return false;
 		if (opts.keepMemory === false) {
@@ -593,7 +617,10 @@ export class TartBackend implements ContainerBackend {
 
 		const state: "running" | "paused" =
 			vm.state === "running" ? "running" : "paused";
-		if (state === "running") await this.attachLoaded(instance);
+		if (state === "running") {
+			this.clearStalePause(instance);
+			await this.attachLoaded(instance);
+		}
 
 		return {
 			sandboxId: instance.sandboxId,
@@ -644,6 +671,7 @@ export class TartBackend implements ContainerBackend {
 
 			const state: "running" | "paused" =
 				vm.state === "running" ? "running" : "paused";
+			if (state === "running") this.clearStalePause(instance);
 
 			if (filters?.state && filters.state !== state) continue;
 

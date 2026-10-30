@@ -6,7 +6,6 @@ import {
 	renameSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { config } from "../config.ts";
 import { NotFoundError, RetryableError } from "../errors.ts";
@@ -82,7 +81,7 @@ export class DockerService implements ContainerBackend {
 		this.imagePullWaitMs = opts.imagePullWaitMs ?? 10_000;
 		this.timeoutStatePath =
 			opts.statePath === undefined
-				? join(homedir(), ".sandbox", "docker-timeouts.json")
+				? join(config.stateDir, "docker-timeouts.json")
 				: opts.statePath;
 		this.loadTimeoutState();
 	}

@@ -1,9 +1,10 @@
 import { tmpdir } from "node:os";
 import {
+	createWriteStream,
 	existsSync,
+	mkdtempSync,
 	unlinkSync,
 	writeFileSync,
-	createWriteStream,
 } from "node:fs";
 import { createServer } from "node:net";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -71,6 +72,8 @@ export default async function setup() {
 			// This server tests Docker. With Tart enabled it would treat the Tart
 			// suite's VMs as orphans and delete them.
 			SANDBOX_MACOS_BACKEND: "",
+			// Never the user's ~/.sandbox state: a test server would overwrite it.
+			SANDBOX_STATE_DIR: mkdtempSync(join(tmpdir(), "sandbox-state-")),
 		},
 		stdio: "pipe",
 	});

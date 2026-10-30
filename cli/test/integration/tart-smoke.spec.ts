@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, mkdtempSync } from "node:fs";
 import { createServer } from "node:net";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
@@ -69,6 +69,8 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 				ENVD_PROXY_PORT: String(envdProxyPort),
 				API_KEYS: TEST_API_KEY,
 				SANDBOX_MACOS_BACKEND: "tart",
+				// Never the user's ~/.sandbox state: a test server would overwrite it.
+				SANDBOX_STATE_DIR: mkdtempSync(join(tmpdir(), "sandbox-state-")),
 			},
 			stdio: "pipe",
 		});

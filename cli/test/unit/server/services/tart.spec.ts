@@ -414,6 +414,52 @@ describe("TartBackend", () => {
 		});
 	});
 
+	describe("a pause cut short by a server restart", () => {
+		it("treats a running VM stored as paused as running again", async () => {
+			const statePath = join(
+				mkdtempSync(join(tmpdir(), "tart-state-")),
+				"tart.json",
+			);
+			writeFileSync(
+				statePath,
+				JSON.stringify({
+					"sbx-cut": {
+						sandboxId: "sbx-cut",
+						vmName: "sandbox-sbx-cut",
+						accessToken: "t",
+						templateId: "base",
+						createdAt: new Date().toISOString(),
+						timeoutFrom: new Date().toISOString(),
+						timeoutSec: 300,
+						lifecycle: LEGACY_LIFECYCLE,
+						paused: true,
+					},
+				}),
+			);
+			execSyncMock.mockImplementation((cmd: string) => {
+				if (cmd.startsWith("tart list")) {
+					return JSON.stringify([
+						{ Name: "sandbox-sbx-cut", State: "running" },
+					]);
+				}
+				if (cmd.startsWith("tart ip")) return "192.168.64.9";
+				return "";
+			});
+			const restarted = new TartBackend({ statePath });
+
+			expect((await restarted.inspectSandbox("sbx-cut"))?.state).toBe(
+				"running",
+			);
+			// Its envd forwarding comes back instead of staying unreachable.
+			expect(await restarted.resolveTarget("sbx-cut", 49983)).toEqual({
+				host: "localhost",
+				port: mockPort,
+			});
+			const stored = JSON.parse(readFileSync(statePath, "utf-8"));
+			expect(stored["sbx-cut"].paused).toBe(false);
+		});
+	});
+
 	describe("a list while a VM is being created", () => {
 		it("does not delete the clone as orphaned or finished", async () => {
 			let ipFails = false;

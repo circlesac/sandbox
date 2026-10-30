@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, mkdtempSync } from "node:fs";
 import { createServer } from "node:net";
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
@@ -63,6 +63,8 @@ describe.skipIf(skip)("Shuru E2B Smoke", { timeout: 180_000 }, () => {
 				ENVD_PROXY_PORT: String(envdProxyPort),
 				API_KEYS: TEST_API_KEY,
 				SANDBOX_BACKEND: "shuru",
+				// Never the user's ~/.sandbox state: a test server would overwrite it.
+				SANDBOX_STATE_DIR: mkdtempSync(join(tmpdir(), "sandbox-state-")),
 			},
 			stdio: "pipe",
 		});

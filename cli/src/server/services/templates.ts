@@ -13,9 +13,10 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
+import { config } from "../config.ts";
 import { NotFoundError, UnsupportedError } from "../errors.ts";
 import { isImageName } from "../lib/id.ts";
 import { type DockerService, templateImage } from "./docker.ts";
@@ -86,7 +87,7 @@ export class TemplateService {
 
 	constructor(
 		private docker: DockerService,
-		private filesDir = join(homedir(), ".sandbox", "template-files"),
+		private filesDir = join(config.stateDir, "template-files"),
 	) {}
 
 	requestBuild(req: { name?: string; tags?: string[] }) {

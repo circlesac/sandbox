@@ -12,7 +12,10 @@ import {
 	SandboxService,
 	UnsupportedError,
 } from "../../../../src/server/services/sandbox.ts";
-import { resolveSandboxByToken } from "../../../../src/server/services/proxy.ts";
+import {
+	clearPortCache,
+	resolveSandboxByToken,
+} from "../../../../src/server/services/proxy.ts";
 import { TtlService } from "../../../../src/server/services/ttl.ts";
 import type { SandboxInfo } from "../../../../src/server/types.ts";
 
@@ -403,6 +406,21 @@ describe("SandboxService", () => {
 			expect(backend.stateOf(booting ?? "")).toBe("running");
 			await vi.advanceTimersByTimeAsync(1);
 			expect(backend.stateOf(booting ?? "")).toBe("removed");
+		});
+
+		it("knows each sandbox's access token again after a restart", async () => {
+			const running = await service.create({});
+			const paused = await service.create({});
+			await service.pause(paused.sandboxID);
+			clearPortCache();
+
+			await newService().reconcile();
+			expect(resolveSandboxByToken(running.envdAccessToken ?? "")).toBe(
+				running.sandboxID,
+			);
+			expect(resolveSandboxByToken(paused.envdAccessToken ?? "")).toBe(
+				paused.sandboxID,
+			);
 		});
 
 		it("reconciling again does not touch paused sandboxes or loop", async () => {
