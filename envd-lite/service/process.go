@@ -60,7 +60,42 @@ type runningProc struct {
 
 	// readers tracks the stdout/stderr (or PTY) pumps. reap waits for them
 	// before publishing End so that End follows every data event.
-	readers sync.WaitGroup
+	readers   []*outputReader
+	readersWG sync.WaitGroup
+}
+
+// outputReader records one output pump's progress so reap can tell a reader
+// that is still delivering output (draining the pipe, or held in publish by a
+// slow subscriber) from one that sits in Read on a pipe a lingering child
+// keeps open without writing to it.
+type outputReader struct {
+	inRead     atomic.Bool  // set while blocked in Read
+	lastActive atomic.Int64 // UnixNano of the last read or completed publish
+	eof        atomic.Bool  // Read returned an error; the pump has exited
+}
+
+func newOutputReader() *outputReader {
+	r := &outputReader{}
+	r.touch()
+	return r
+}
+
+func (r *outputReader) touch() {
+	r.lastActive.Store(time.Now().UnixNano())
+}
+
+// idleSince reports whether the reader has been blocked in Read with no
+// progress since `since` (or its last activity, whichever is later) for at
+// least window, as of now. A reader at EOF is never idle: it is finished.
+func (r *outputReader) idleSince(now, since time.Time, window time.Duration) bool {
+	if r.eof.Load() || !r.inRead.Load() {
+		return false
+	}
+	last := time.Unix(0, r.lastActive.Load())
+	if last.After(since) {
+		since = last
+	}
+	return now.Sub(since) >= window
 }
 
 // publish delivers an event to every current subscriber and appends it to the
@@ -255,8 +290,7 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 		}
 		proc.ptyFile = ptmx
 		proc.stdin = ptmx
-		proc.readers.Add(1)
-		go s.readPTY(proc, ptmx)
+		proc.startReader(ptmx, outputPty)
 	} else {
 		// Place the child in its own process group so signals/cleanup can target
 		// the whole group, not just the leader.
@@ -295,9 +329,8 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 		proc.stdin = stdin
 		proc.stdoutR = stdoutR
 		proc.stderrR = stderrR
-		proc.readers.Add(2)
-		go s.readStream(proc, stdoutR, true)
-		go s.readStream(proc, stderrR, false)
+		proc.startReader(stdoutR, outputStdout)
+		proc.startReader(stderrR, outputStderr)
 	}
 
 	s.mu.Lock()
@@ -308,72 +341,100 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 	return proc, sub, nil
 }
 
-func (s *ProcessService) readStream(proc *runningProc, r io.Reader, isStdout bool) {
-	defer proc.readers.Done()
+type outputKind int
+
+const (
+	outputStdout outputKind = iota
+	outputStderr
+	outputPty
+)
+
+// startReader launches a pump that copies f into data events until Read
+// fails, and registers it so reap can track its progress.
+func (p *runningProc) startReader(f io.Reader, kind outputKind) {
+	r := newOutputReader()
+	p.readers = append(p.readers, r)
+	p.readersWG.Add(1)
+	go p.readOutput(r, f, kind)
+}
+
+func (p *runningProc) readOutput(r *outputReader, f io.Reader, kind outputKind) {
+	defer p.readersWG.Done()
 	buf := make([]byte, readChunkSize)
 	for {
-		n, err := r.Read(buf)
+		r.inRead.Store(true)
+		n, err := f.Read(buf)
+		r.inRead.Store(false)
 		if n > 0 {
+			r.touch()
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
-			var data *procpb.ProcessEvent_DataEvent
-			if isStdout {
-				data = &procpb.ProcessEvent_DataEvent{
-					Output: &procpb.ProcessEvent_DataEvent_Stdout{Stdout: chunk},
-				}
-			} else {
-				data = &procpb.ProcessEvent_DataEvent{
-					Output: &procpb.ProcessEvent_DataEvent_Stderr{Stderr: chunk},
-				}
+			data := &procpb.ProcessEvent_DataEvent{}
+			switch kind {
+			case outputStdout:
+				data.Output = &procpb.ProcessEvent_DataEvent_Stdout{Stdout: chunk}
+			case outputStderr:
+				data.Output = &procpb.ProcessEvent_DataEvent_Stderr{Stderr: chunk}
+			case outputPty:
+				data.Output = &procpb.ProcessEvent_DataEvent_Pty{Pty: chunk}
 			}
-			proc.publish(&procpb.ProcessEvent{
+			p.publish(&procpb.ProcessEvent{
 				Event: &procpb.ProcessEvent_Data{Data: data},
 			})
+			// publish may have blocked on a slow subscriber for any length of
+			// time; the reader is only idle once it has sat in Read after this.
+			r.touch()
 		}
 		if err != nil {
+			r.eof.Store(true)
 			return
 		}
 	}
 }
 
-func (s *ProcessService) readPTY(proc *runningProc, ptmx *os.File) {
-	defer proc.readers.Done()
-	buf := make([]byte, readChunkSize)
-	for {
-		n, err := ptmx.Read(buf)
-		if n > 0 {
-			chunk := make([]byte, n)
-			copy(chunk, buf[:n])
-			proc.publish(&procpb.ProcessEvent{
-				Event: &procpb.ProcessEvent_Data{
-					Data: &procpb.ProcessEvent_DataEvent{
-						Output: &procpb.ProcessEvent_DataEvent_Pty{Pty: chunk},
-					},
-				},
-			})
-		}
-		if err != nil {
-			return
+// readersIdle reports whether every reader has either exited or has been
+// blocked in Read with nothing to deliver for window, counted from the later
+// of the process exit and the reader's last progress.
+func (p *runningProc) readersIdle(now, exitedAt time.Time, window time.Duration) bool {
+	for _, r := range p.readers {
+		if !r.eof.Load() && !r.idleSince(now, exitedAt, window) {
+			return false
 		}
 	}
+	return true
 }
 
 func (s *ProcessService) reap(proc *runningProc) {
 	// Returns when the process itself exits. Nothing here waits on the output
 	// pipes, so a background child that inherited them cannot hold End back.
 	err := proc.cmd.Wait()
+	exitedAt := time.Now()
 
-	// Output written just before exit may still be in the pipe. Normally the
-	// readers hit EOF within microseconds; if a lingering child keeps the
-	// write end open, give up after a short drain window instead.
 	readersDone := make(chan struct{})
 	go func() {
-		proc.readers.Wait()
+		proc.readersWG.Wait()
 		close(readersDone)
 	}()
-	select {
-	case <-readersDone:
-	case <-time.After(200 * time.Millisecond):
+
+	// Output written before exit may still be in the pipe, and a slow
+	// subscriber can hold a reader in publish for as long as it likes, so the
+	// drain is bounded by progress rather than by a fixed delay after exit:
+	// keep waiting while any reader is reading or publishing. Only once every
+	// reader that has not hit EOF has sat in Read for 200 ms with nothing to
+	// deliver (a lingering child holds the write end open but is not using it)
+	// is the pipe given up on, so a background `sleep 30 &` cannot delay End.
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+drain:
+	for {
+		select {
+		case <-readersDone:
+			break drain
+		case now := <-ticker.C:
+			if proc.readersIdle(now, exitedAt, 200*time.Millisecond) {
+				break drain
+			}
+		}
 	}
 
 	// Close the parent's read ends so blocked readers return, then wait for
