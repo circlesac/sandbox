@@ -395,6 +395,31 @@ export class TartBackend implements ContainerBackend {
 	 * when the sandbox is first used. A paused VM waits for startContainer,
 	 * which rebuilds the proxy as it resumes.
 	 */
+	/** A VM that stopped while not paused or being created: its runner finished. */
+	private finishedOnItsOwn(instance: TartInstance, vmState: string): boolean {
+		return (
+			vmState === "stopped" &&
+			!instance.paused &&
+			!this.starting.has(instance.vmName)
+		);
+	}
+
+	/** Deletes a finished VM; the caller drops it from the state, now or in a batch. */
+	private async cleanUpFinished(
+		sandboxId: string,
+		instance: TartInstance,
+		forget = true,
+	): Promise<void> {
+		console.log(
+			`VM "${instance.vmName}" stopped (runner finished), cleaning up`,
+		);
+		try {
+			await tartExec(["delete", instance.vmName]);
+		} catch {}
+		instance.proxy?.close();
+		if (forget) this.instances.delete(sandboxId);
+	}
+
 	/**
 	 * A running VM marked paused with no pause under way was being paused
 	 * when a previous server stopped: the suspend never happened. Treat it as
@@ -454,7 +479,8 @@ export class TartBackend implements ContainerBackend {
 		// boots from disk, polled in short steps so a failed run is noticed.
 		const coldBoot = vm?.state === "stopped";
 		let vmIp: string | undefined;
-		for (let i = 0; i < (coldBoot ? 18 : 2); i++) {
+		// A suspended VM gets enough rounds for its tart run restarts too.
+		for (let i = 0; i < (coldBoot ? 18 : 6); i++) {
 			if (run && run.exitCode !== null) {
 				if (restarts >= 3) break;
 				restarts++;
@@ -478,16 +504,26 @@ export class TartBackend implements ContainerBackend {
 		}
 
 		// Wait for envd-lite to become healthy (suspended resume is near-instant)
-		for (let i = 0; i < (coldBoot ? 60 : 30); i++) {
+		let healthy = false;
+		for (let i = 0; i < (coldBoot ? 60 : 30) && !healthy; i++) {
 			try {
 				const res = await fetch(`http://${vmIp}:${config.envdPort}/health`, {
 					signal: AbortSignal.timeout(2_000),
 				});
-				if (res.status === 204) break;
+				healthy = res.status === 204;
 			} catch {
 				// not ready yet
 			}
-			await new Promise((r) => setTimeout(r, coldBoot ? 2000 : 200));
+			if (!healthy) {
+				await new Promise((r) => setTimeout(r, coldBoot ? 2000 : 200));
+			}
+		}
+		// A resume that cannot reach envd is a failed resume, not a running
+		// sandbox nobody can use.
+		if (!healthy) {
+			throw new Error(
+				`envd-lite in VM "${instance.vmName}" did not become healthy after resume`,
+			);
 		}
 
 		// Recreate TCP proxy (previous one was closed on pause)
@@ -614,6 +650,13 @@ export class TartBackend implements ContainerBackend {
 			this.persistState();
 			return null;
 		}
+		// Stopped without a pause: the runner finished. Gone, as listSandboxes
+		// reports it, not a paused sandbox that could be resumed.
+		if (this.finishedOnItsOwn(instance, vm.state)) {
+			await this.cleanUpFinished(sandboxId, instance);
+			this.persistState();
+			return null;
+		}
 
 		const state: "running" | "paused" =
 			vm.state === "running" ? "running" : "paused";
@@ -653,18 +696,8 @@ export class TartBackend implements ContainerBackend {
 			}
 
 			// VM shut itself down (runner finished) → clean up
-			if (
-				vm.state === "stopped" &&
-				!instance.paused &&
-				!this.starting.has(instance.vmName)
-			) {
-				console.log(
-					`VM "${instance.vmName}" stopped (runner finished), cleaning up`,
-				);
-				try {
-					await tartExec(["delete", instance.vmName]);
-				} catch {}
-				instance.proxy?.close();
+			if (this.finishedOnItsOwn(instance, vm.state)) {
+				await this.cleanUpFinished(id, instance, false);
 				dead.push(id);
 				continue;
 			}

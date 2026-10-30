@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -246,6 +252,28 @@ describe("TemplateService", () => {
 		await expect(service.startBuild(templateID, buildID, body)).rejects.toThrow(
 			error,
 		);
+	});
+
+	it("marks a build that cannot start as failed and leaves no temp directory", async () => {
+		const { docker } = fakeDocker();
+		const service = new TemplateService(docker, filesDir);
+		const { templateID, buildID } = service.requestBuild({ name: "early" });
+		const before = readdirSync(tmpdir()).filter((f) =>
+			f.startsWith("sandbox-template-"),
+		);
+		await expect(
+			service.startBuild(templateID, buildID, {
+				fromTemplate: "base",
+				steps: [{ type: "ENV", args: ["A B", "1"] }],
+			}),
+		).rejects.toThrow(/invalid environment variable name/);
+		const after = readdirSync(tmpdir()).filter((f) =>
+			f.startsWith("sandbox-template-"),
+		);
+		expect(after.filter((f) => !before.includes(f))).toEqual([]);
+		const status = service.status(templateID, buildID);
+		expect(status.status).toBe("error");
+		expect(status.reason?.message).toMatch(/invalid environment variable name/);
 	});
 
 	it("reports a failed build with its reason and log offsets", async () => {

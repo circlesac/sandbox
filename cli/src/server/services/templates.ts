@@ -176,7 +176,18 @@ export class TemplateService {
 			: body.fromTemplate
 				? await this.docker.resolveImage(body.fromTemplate)
 				: "";
-		const context = this.prepareContext(body, baseImage);
+		let context: string;
+		try {
+			context = this.prepareContext(body, baseImage);
+		} catch (err) {
+			// The build cannot start: say so to anyone polling its status,
+			// instead of leaving it waiting forever.
+			build.status = "error";
+			build.reason = {
+				message: err instanceof Error ? err.message : String(err),
+			};
+			throw err;
+		}
 		build.status = "building";
 		void this.runBuild(build, body, context);
 	}
@@ -301,6 +312,21 @@ export class TemplateService {
 	/** Writes the Dockerfile and unpacks each COPY step's upload into a build context. */
 	private prepareContext(body: TemplateBuildStart, baseImage: string): string {
 		const dir = mkdtempSync(join(tmpdir(), "sandbox-template-"));
+		try {
+			this.writeContext(dir, body, baseImage);
+			return dir;
+		} catch (err) {
+			// A step that cannot work leaves nothing behind in the temp dir.
+			rmSync(dir, { recursive: true, force: true });
+			throw err;
+		}
+	}
+
+	private writeContext(
+		dir: string,
+		body: TemplateBuildStart,
+		baseImage: string,
+	): void {
 		const lines: string[] = [];
 		let user = "root";
 
@@ -400,7 +426,6 @@ export class TemplateService {
 			'CMD ["/bin/sh", "-c", "if [ -x /usr/local/bin/sandbox-portf ]; then /usr/local/bin/sandbox-portf & fi; exec /usr/bin/envd -isnotfc"]',
 		);
 		writeFileSync(join(dir, "Dockerfile"), `${lines.join("\n")}\n`);
-		return dir;
 	}
 
 	private async runBuild(

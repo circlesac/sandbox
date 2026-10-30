@@ -459,9 +459,10 @@ describe("sandbox controllers", () => {
 			vi.mocked(service.list).mockResolvedValue(listed(3) as never);
 			for (const token of [
 				"%%%",
-				// Well-formed JSON of the wrong shape: {} and null.
+				// Well-formed JSON of the wrong shape: {}, null, a missing field.
 				Buffer.from("{}").toString("base64url"),
 				Buffer.from("null").toString("base64url"),
+				Buffer.from('{"sandboxID":"sbx-1"}').toString("base64url"),
 			]) {
 				const res = await app.request(
 					`/v2/sandboxes?limit=2&nextToken=${token}`,

@@ -513,6 +513,33 @@ describe("SandboxService", () => {
 			]);
 		});
 
+		it("queues a connect with the client-ID suffix behind a pause without it", async () => {
+			const { sandboxID } = await service.create({});
+			let release = () => {};
+			backend.stopGate = new Promise((r) => {
+				release = r;
+			});
+
+			const pausing = service.pause(sandboxID);
+			const connecting = service.connect(`${sandboxID}-6532622b`, 60);
+			// The same sandbox, so the same pause is shared.
+			const pausingAgain = service.pause(`${sandboxID}-6532622b`);
+			await vi.advanceTimersByTimeAsync(0);
+			release();
+			backend.stopGate = null;
+			expect(await Promise.all([pausing, pausingAgain])).toEqual([true, true]);
+			await connecting;
+			expect(
+				backend.events.filter((e) => e === `frozen ${sandboxID}`),
+			).toHaveLength(1);
+
+			expect(backend.stateOf(sandboxID)).toBe("running");
+			expect(backend.events.slice(-2)).toEqual([
+				`frozen ${sandboxID}`,
+				`start ${sandboxID}`,
+			]);
+		});
+
 		it("lets a pause during a resume freeze the sandbox after the resume", async () => {
 			const { sandboxID } = await service.create({});
 			await service.pause(sandboxID);

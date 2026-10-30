@@ -315,6 +315,21 @@ describe("TartBackend", () => {
 			);
 		});
 
+		it("reports a VM that stopped by itself as gone, not paused, when inspected", async () => {
+			addInstance("sbx-ran");
+			execSyncMock.mockImplementation((cmd: string) =>
+				cmd.startsWith("tart list")
+					? JSON.stringify([{ Name: "sandbox-sbx-ran", State: "stopped" }])
+					: "",
+			);
+			vi.spyOn(console, "log").mockImplementation(() => {});
+			expect(await backend.inspectSandbox("sbx-ran")).toBeNull();
+			expect(execSyncMock).toHaveBeenCalledWith(
+				"tart delete sandbox-sbx-ran",
+				expect.anything(),
+			);
+		});
+
 		it("still cleans up a VM that stopped by itself", async () => {
 			addInstance("sbx-done");
 			execSyncMock.mockImplementation((cmd: string) =>
@@ -526,6 +541,53 @@ describe("TartBackend", () => {
 			} finally {
 				globalThis.setTimeout = originalSetTimeout;
 				held.clear();
+			}
+		});
+	});
+
+	describe("resuming a VM whose envd-lite never answers", () => {
+		it("fails the resume instead of reporting a running sandbox", async () => {
+			(backend as unknown as { instances: Map<string, unknown> }).instances.set(
+				"sbx-mute",
+				{
+					sandboxId: "sbx-mute",
+					vmName: "sandbox-sbx-mute",
+					hostPort: 1,
+					accessToken: "t",
+					templateId: "base",
+					createdAt: new Date().toISOString(),
+					timeoutFrom: new Date().toISOString(),
+					timeoutSec: 300,
+					lifecycle: LEGACY_LIFECYCLE,
+					paused: true,
+				},
+			);
+			execSyncMock.mockImplementation((cmd: string) => {
+				if (cmd.startsWith("tart list")) {
+					return JSON.stringify([
+						{ Name: "sandbox-sbx-mute", State: "suspended" },
+					]);
+				}
+				if (cmd.startsWith("tart ip")) return "192.168.64.7";
+				return "";
+			});
+			vi.useRealTimers();
+			const originalSetTimeout = globalThis.setTimeout;
+			const originalFetch = globalThis.fetch;
+			globalThis.setTimeout = ((fn: () => void) =>
+				originalSetTimeout(fn, 0)) as typeof setTimeout;
+			globalThis.fetch = vi
+				.fn()
+				.mockRejectedValue(
+					new Error("ECONNREFUSED"),
+				) as unknown as typeof fetch;
+			try {
+				await expect(backend.startContainer("sbx-mute")).rejects.toThrow(
+					/did not become healthy after resume/,
+				);
+			} finally {
+				globalThis.setTimeout = originalSetTimeout;
+				globalThis.fetch = originalFetch;
 			}
 		});
 	});

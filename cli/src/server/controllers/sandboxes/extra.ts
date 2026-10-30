@@ -58,6 +58,14 @@ function page<T>(
 		try {
 			const after = JSON.parse(Buffer.from(token, "base64url").toString()) as T;
 			if (!after || typeof after !== "object") throw new Error();
+			// Every field the key holds must be there, as this server wrote it.
+			const sample = items[0];
+			if (sample !== undefined) {
+				for (const [field, value] of Object.entries(keyOf(sample))) {
+					const given = (after as Record<string, unknown>)[field];
+					if (typeof given !== typeof value) throw new Error();
+				}
+			}
 			rest = items.filter((item) => compare(item, after) > 0);
 		} catch {
 			throw new UnsupportedError("Invalid nextToken");

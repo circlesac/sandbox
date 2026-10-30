@@ -373,13 +373,19 @@ export class DockerService implements ContainerBackend {
 			stream.resume();
 		});
 		if (opts.timeoutMs !== undefined) {
+			let timer: ReturnType<typeof setTimeout> | undefined;
 			const finished = await Promise.race([
 				waitForStream.then(() => true),
-				new Promise<boolean>((resolve) =>
-					setTimeout(() => resolve(false), opts.timeoutMs),
-				),
+				new Promise<boolean>((resolve) => {
+					timer = setTimeout(() => resolve(false), opts.timeoutMs);
+				}),
 			]);
-			if (!finished) return null;
+			clearTimeout(timer);
+			if (!finished) {
+				// Docker cannot stop an exec; at least drop our end of its stream.
+				(stream as { destroy?: () => void }).destroy?.();
+				return null;
+			}
 		} else {
 			await waitForStream;
 		}

@@ -337,6 +337,7 @@ export class SandboxService {
 	 * under way then freezes, nor a pause freeze one mid-resume.
 	 */
 	private serialize<T>(sandboxId: string, op: () => Promise<T>): Promise<T> {
+		sandboxId = lifecycleKey(sandboxId);
 		const previous = this.lifecycleOps.get(sandboxId) ?? Promise.resolve();
 		const result = previous.then(op, op);
 		const settled = result.then(
@@ -359,12 +360,13 @@ export class SandboxService {
 	async pause(sandboxId: string, keepMemory = true): Promise<boolean> {
 		// Concurrent pauses of one sandbox share the first; a pause of a sandbox
 		// that is already paused is a conflict, as in E2B.
-		const pending = this.pauses.get(sandboxId);
+		const key = lifecycleKey(sandboxId);
+		const pending = this.pauses.get(key);
 		if (pending) return pending;
 		const pause = this.serialize(sandboxId, () =>
 			this.pauseNow(sandboxId, keepMemory),
-		).finally(() => this.pauses.delete(sandboxId));
-		this.pauses.set(sandboxId, pause);
+		).finally(() => this.pauses.delete(key));
+		this.pauses.set(key, pause);
 		return pause;
 	}
 
@@ -521,7 +523,8 @@ export class SandboxService {
 	 */
 	async resumeForTraffic(sandboxId: string): Promise<boolean> {
 		// Registered before any lookup, so concurrent requests share it.
-		const pending = this.resumes.get(sandboxId);
+		const key = lifecycleKey(sandboxId);
+		const pending = this.resumes.get(key);
 		if (pending) return pending;
 
 		const resume = (async () => {
@@ -531,8 +534,8 @@ export class SandboxService {
 			if (!found.info.lifecycle.autoResume) return false;
 			await this.connect(id, found.info.timeoutSec);
 			return true;
-		})().finally(() => this.resumes.delete(sandboxId));
-		this.resumes.set(sandboxId, resume);
+		})().finally(() => this.resumes.delete(key));
+		this.resumes.set(key, resume);
 		return resume;
 	}
 
@@ -702,7 +705,10 @@ export class SandboxService {
 				`Sandbox ${sandboxId} doesn't exist or you don't have access to it`,
 			);
 		}
-		if (this.pauses.has(sandboxId) || found.info.state !== "running") {
+		if (
+			this.pauses.has(lifecycleKey(sandboxId)) ||
+			found.info.state !== "running"
+		) {
 			throw new ConflictError(`Sandbox ${sandboxId} is paused or pausing`);
 		}
 		await found.backend.refreshTimeout?.(sandboxId, timeout);
@@ -830,4 +836,15 @@ export { NotFoundError, UnsupportedError };
 /** A template reference without its tag, as E2B reports the template of a sandbox. */
 function templateName(templateId: string): string {
 	return templateId.split(":")[0] ?? templateId;
+}
+
+/**
+ * The key that queues and shares the lifecycle operations of one sandbox,
+ * known before any lookup: a client may add an E2B client ID
+ * (sbx-<id>-<8 hex digits>), and the same sandbox must share one queue
+ * with or without it. Sandbox IDs have no dash after "sbx-", so the suffix
+ * is unambiguous.
+ */
+function lifecycleKey(sandboxId: string): string {
+	return sandboxId.replace(/^(sbx-[a-z0-9]+)-[0-9a-f]{8}$/, "$1");
 }
