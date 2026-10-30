@@ -40,7 +40,7 @@ func TestHandleInit(t *testing.T) {
 	state := NewEnvState()
 	body := strings.NewReader(`{"envVars":{"K":"V"},"defaultUser":"alice"}`)
 	w := httptest.NewRecorder()
-	HandleInit(state)(w, httptest.NewRequest("POST", "/init", body))
+	HandleInit(state, &AccessToken{})(w, httptest.NewRequest("POST", "/init", body))
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -50,14 +50,14 @@ func TestHandleInit(t *testing.T) {
 
 	// Wrong method.
 	w = httptest.NewRecorder()
-	HandleInit(state)(w, httptest.NewRequest("GET", "/init", nil))
+	HandleInit(state, &AccessToken{})(w, httptest.NewRequest("GET", "/init", nil))
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", w.Code)
 	}
 
 	// Bad json.
 	w = httptest.NewRecorder()
-	HandleInit(state)(w, httptest.NewRequest("POST", "/init", strings.NewReader("not json")))
+	HandleInit(state, &AccessToken{})(w, httptest.NewRequest("POST", "/init", strings.NewReader("not json")))
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
 	}
@@ -164,6 +164,59 @@ func TestHandleFiles_PostMultipart(t *testing.T) {
 	data, _ := os.ReadFile(target)
 	if string(data) != "multi" {
 		t.Errorf("got %q", string(data))
+	}
+}
+
+// multipartUpload posts one "file" part with the given filename to path.
+func multipartUpload(t *testing.T, path, filename, content string) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(fw, strings.NewReader(content))
+	mw.Close()
+
+	req := httptest.NewRequest("POST", "/files?path="+path, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	HandleFiles(w, req)
+	return w
+}
+
+// A part filename may only name a file inside the directory given by path; it
+// must never escape it or resolve to the directory itself.
+func TestHandleFiles_PostMultipartDirFilenameIsConfined(t *testing.T) {
+	root := t.TempDir()
+	uploads := filepath.Join(root, "a", "b", "uploads")
+	os.MkdirAll(uploads, 0755)
+
+	// Traversal components are stripped: the file lands inside uploads/.
+	w := multipartUpload(t, uploads+"/", "../../escape.txt", "x")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(uploads, "escape.txt")); err != nil {
+		t.Errorf("file not written inside uploads/: %v", err)
+	}
+	for _, p := range []string{filepath.Join(root, "a", "escape.txt"), filepath.Join(root, "escape.txt")} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("file escaped the upload directory: %s", p)
+		}
+	}
+
+	// Names that resolve to the directory or its parent are rejected with 400.
+	for _, name := range []string{".", "..", "/", "a/.."} {
+		w := multipartUpload(t, uploads+"/", name, "x")
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("filename %q: status=%d body=%s, want 400", name, w.Code, w.Body.String())
+		}
+	}
+	entries, _ := os.ReadDir(uploads)
+	if len(entries) != 1 {
+		t.Errorf("uploads/ has %d entries, want only escape.txt", len(entries))
 	}
 }
 

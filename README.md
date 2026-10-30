@@ -53,8 +53,8 @@ returns whenever the OrbStack Docker engine starts.
 ### Shuru (Linux microVMs on macOS)
 
 ```bash
-brew install shuru
-shuru checkpoint create sandbox-base --allow-net -- sh -c '...'
+brew install superhq-ai/tap/shuru
+# Create the sandbox-base checkpoint with envd: see docs/container-runtimes.md
 
 # Set backend
 # ~/.sandbox/config.json → { "backend": "shuru" }
@@ -154,6 +154,39 @@ SANDBOX_API_URL=http://localhost:49982 \
 SANDBOX_API_KEY="$(jq -r .apiKey ~/.sandbox/config.json)" \
 bun run smoke:pty
 ```
+
+## E2B compatibility
+
+`sandbox` follows the E2B API and SDK, tested with the lowest supported SDK (the floor of the `e2b` range in `cli/package.json`, now 2.31.0) and the latest release by `bun run test:sdk-matrix`. A request option that a backend cannot honor is rejected with a 400 that names it; an E2B API this server does not provide answers 501. Nothing is silently ignored, except where noted below.
+
+| Feature | Docker | Tart (macOS) | Shuru |
+| --- | --- | --- | --- |
+| Create, commands, PTY, files | Yes | Yes | Yes |
+| envd access token (every sandbox is secure; `secure: false` is ignored, as in E2B) | Enforced by envd | Enforced by envd-lite and the control plane | Enforced by the control plane |
+| Timeout kills the sandbox (E2B default) | Yes | Yes | Yes |
+| `onTimeout: "pause"` / `Sandbox.pause()`, keeping memory | Yes (container frozen) | Yes (VM suspended); where the host cannot save VM state, the VM stops and keeps only its disk | 400 |
+| Filesystem-only pause (`autoPauseMemory: false`, `memory: false`) | Yes (container stopped) | 400 | 400 |
+| `autoResume` on traffic | Yes | Yes | No pause, so 400 |
+| Any port via `getHost(port)` or `E2b-Sandbox-Port` | Yes on Linux and OrbStack; not Docker Desktop for Mac | Yes | envd's port only |
+| `network.allowPublicTraffic: false` | Yes | Yes | Yes |
+| Egress rules, `allowInternetAccess: false`, `maskRequestHost` | 400 | 400 | 400 |
+| Template builds, tags, aliases, delete | Yes (Docker image builds) | Templates are Docker images, so they start on Docker only | 400 when Shuru is the Linux backend |
+| Snapshots (IDs are `<name>:<tag>`, tag `default`) | Filesystem only | 400 | 400 |
+| `Sandbox.fork()` (15 s default timeout, 409 for a paused sandbox) | Filesystem only; processes start anew | 400 | 400 |
+| Metrics | Current sample, no history | Current sample, no history | Current sample, no history |
+| MCP gateway, IAM tokens, volume mounts | 400 | 400 | 400 |
+| Volumes and secrets APIs | 501 | 501 | 501 |
+
+Known differences that are not errors:
+
+- `getHost(port)` returns `<port>-<sandboxId>.<host the client used>`, for example `3000-sbx-abc.localhost:49982`. Browsers and curl resolve `*.localhost`; behind a public hostname, the extra subdomain level needs a wildcard certificate that covers it, so header routing (`E2b-Sandbox-Id` and `E2b-Sandbox-Port`) is the dependable route.
+- On Docker, sandboxes share one bridge network, so a service listening on all interfaces in one sandbox is reachable from another sandbox, and `allowPublicTraffic: false` guards only the proxy. A port that listens only on loopback is forwarded for the proxy alone; other sandboxes are refused.
+- Tart sandboxes are recorded in `~/.sandbox/tart-instances.json`, so a server restart keeps them: a paused VM resumes on the next connect, and a running VM gets its envd forwarding back on first use; only `sandbox-sbx-*` VMs that no state entry claims are deleted as orphans.
+- On Tart, a command ends when its process exits and its output has gone quiet for 200 ms. A background process it started that keeps writing to the same output (a log loop) holds the end back until it stops; redirect such a process's output.
+- WebSocket upgrades to sandbox ports are not proxied.
+- The `Idempotency-Key` header on create is not honored; a retried create can start a second sandbox.
+- Sandboxes created before lifecycles were recorded keep their old behavior: pause by stopping on timeout.
+- Docker reports the envd version in each image (0.10.2 in the base image), so the SDK uses what that envd supports; Tart reports envd-lite's 0.5.3.
 
 ## Architecture
 

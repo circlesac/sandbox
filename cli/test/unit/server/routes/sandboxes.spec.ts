@@ -2,201 +2,526 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fromHono, extendZodWithOpenApi } from "chanfana";
 import { z } from "zod";
 import { Hono } from "hono";
-import { NotFoundError, type SandboxService } from "../../../../src/server/services/sandbox.ts";
+import { RetryableError } from "../../../../src/server/errors.ts";
+import {
+	NotFoundError,
+	type SandboxService,
+	UnsupportedError,
+} from "../../../../src/server/services/sandbox.ts";
 
 extendZodWithOpenApi(z);
 
 import {
-  CreateSandbox,
-  DeleteSandbox,
-  GetSandbox,
-  ListSandboxes,
-  PauseSandbox,
-  ResumeSandbox,
-  SetSandboxTimeout,
-  setSandboxService,
+	registerSandboxRoutes,
+	setSandboxService,
 } from "../../../../src/server/controllers/sandboxes/index.ts";
 
 function createMockService(): SandboxService {
-  return {
-    create: vi.fn().mockResolvedValue({
-      sandboxID: "sbx-test123",
-      templateID: "base",
-      clientID: "sbx-test123",
-      envdVersion: "0.5.3",
-      envdAccessToken: "token-abc",
-      trafficAccessToken: null,
-      domain: null,
-    }),
-    getInfo: vi.fn().mockResolvedValue({
-      sandboxID: "sbx-test123",
-      templateID: "base",
-      clientID: "sbx-test123",
-      envdVersion: "0.5.3",
-      domain: null,
-      startedAt: "2026-02-15T00:00:00Z",
-      endAt: "2026-02-15T00:05:00Z",
-    }),
-    kill: vi.fn().mockResolvedValue(true),
-    pause: vi.fn().mockResolvedValue(true),
-    connect: vi.fn().mockResolvedValue({
-      sandboxID: "sbx-test123",
-      templateID: "base",
-      clientID: "sbx-test123",
-      envdVersion: "0.5.3",
-      envdAccessToken: "token-abc",
-      trafficAccessToken: null,
-      domain: null,
-    }),
-    setTimeout: vi.fn().mockResolvedValue(undefined),
-    list: vi.fn().mockResolvedValue([]),
-  } as unknown as SandboxService;
+	return {
+		create: vi.fn().mockResolvedValue({
+			sandboxID: "sbx-test123",
+			templateID: "base",
+			clientID: "sbx-test123",
+			envdVersion: "0.5.3",
+			envdAccessToken: "token-abc",
+			trafficAccessToken: null,
+			domain: null,
+		}),
+		getInfo: vi.fn().mockResolvedValue({
+			sandboxID: "sbx-test123",
+			templateID: "base",
+			clientID: "sbx-test123",
+			envdVersion: "0.5.3",
+			domain: null,
+			startedAt: "2026-02-15T00:00:00Z",
+			endAt: "2026-02-15T00:05:00Z",
+		}),
+		kill: vi.fn().mockResolvedValue(true),
+		pause: vi.fn().mockResolvedValue(true),
+		connect: vi.fn().mockResolvedValue({
+			sandboxID: "sbx-test123",
+			templateID: "base",
+			clientID: "sbx-test123",
+			envdVersion: "0.5.3",
+			envdAccessToken: "token-abc",
+			trafficAccessToken: null,
+			domain: null,
+		}),
+		setTimeout: vi.fn().mockResolvedValue(undefined),
+		list: vi.fn().mockResolvedValue([]),
+	} as unknown as SandboxService;
 }
 
 describe("sandbox controllers", () => {
-  let app: Hono;
-  let service: ReturnType<typeof createMockService>;
+	let app: Hono;
+	let service: ReturnType<typeof createMockService>;
 
-  beforeEach(() => {
-    service = createMockService();
-    setSandboxService(service as unknown as SandboxService);
+	beforeEach(() => {
+		service = createMockService();
+		setSandboxService(service as unknown as SandboxService);
 
-    app = new Hono();
-    const openapi = fromHono(app);
-    openapi.get("/sandboxes", ListSandboxes);
-    openapi.post("/sandboxes", CreateSandbox);
-    openapi.get("/sandboxes/:sandboxID", GetSandbox);
-    openapi.delete("/sandboxes/:sandboxID", DeleteSandbox);
-    openapi.post("/sandboxes/:sandboxID/pause", PauseSandbox);
-    openapi.post("/sandboxes/:sandboxID/resume", ResumeSandbox);
-    openapi.post("/sandboxes/:sandboxID/timeout", SetSandboxTimeout);
-  });
+		app = new Hono();
+		registerSandboxRoutes(fromHono(app));
+	});
 
-  describe("GET /sandboxes", () => {
-    it("returns 200 with empty list", async () => {
-      const res = await app.request("/sandboxes");
+	describe("GET /sandboxes", () => {
+		it("returns 200 with empty list", async () => {
+			const res = await app.request("/sandboxes");
 
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body).toEqual([]);
-    });
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body).toEqual([]);
+		});
 
-    it("returns 200 with sandbox list", async () => {
-      (service.list as ReturnType<typeof vi.fn>).mockResolvedValue([
-        {
-          sandboxID: "sbx-test123",
-          templateID: "base",
-          clientID: "sbx-test123",
-          envdVersion: "0.5.3",
-          domain: null,
-          startedAt: "2026-02-15T00:00:00Z",
-          endAt: "2026-02-15T00:05:00Z",
-        },
-      ]);
+		it("returns 200 with sandbox list", async () => {
+			(service.list as ReturnType<typeof vi.fn>).mockResolvedValue([
+				{
+					sandboxID: "sbx-test123",
+					templateID: "base",
+					clientID: "sbx-test123",
+					envdVersion: "0.5.3",
+					domain: null,
+					startedAt: "2026-02-15T00:00:00Z",
+					endAt: "2026-02-15T00:05:00Z",
+				},
+			]);
 
-      const res = await app.request("/sandboxes");
+			const res = await app.request("/sandboxes");
 
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>[];
-      expect(body).toHaveLength(1);
-      expect(body[0]!.sandboxID).toBe("sbx-test123");
-    });
-  });
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as Record<string, unknown>[];
+			expect(body).toHaveLength(1);
+			expect(body[0]!.sandboxID).toBe("sbx-test123");
+		});
+	});
 
-  describe("POST /sandboxes", () => {
-    it("returns 201 with sandbox response", async () => {
-      const res = await app.request("/sandboxes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ templateID: "base" }),
-      });
+	describe("POST /sandboxes", () => {
+		it("returns 201 with sandbox response", async () => {
+			const res = await app.request("/sandboxes", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ templateID: "base" }),
+			});
 
-      expect(res.status).toBe(201);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.sandboxID).toBe("sbx-test123");
-      expect(body.envdAccessToken).toBe("token-abc");
-    });
-  });
+			expect(res.status).toBe(201);
+			const body = (await res.json()) as Record<string, unknown>;
+			expect(body.sandboxID).toBe("sbx-test123");
+			expect(body.envdAccessToken).toBe("token-abc");
+		});
+	});
 
-  describe("GET /sandboxes/:sandboxID", () => {
-    it("returns 200 with sandbox info", async () => {
-      const res = await app.request("/sandboxes/sbx-test123");
+	describe("GET /sandboxes/:sandboxID", () => {
+		it("returns 200 with sandbox info", async () => {
+			const res = await app.request("/sandboxes/sbx-test123");
 
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.sandboxID).toBe("sbx-test123");
-    });
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as Record<string, unknown>;
+			expect(body.sandboxID).toBe("sbx-test123");
+		});
 
-    it("returns 404 for unknown sandbox", async () => {
-      (service.getInfo as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+		it("returns 404 for unknown sandbox", async () => {
+			(service.getInfo as ReturnType<typeof vi.fn>).mockResolvedValue(null);
 
-      const res = await app.request("/sandboxes/sbx-missing");
-      expect(res.status).toBe(404);
-    });
-  });
+			const res = await app.request("/sandboxes/sbx-missing");
+			expect(res.status).toBe(404);
+		});
+	});
 
-  describe("DELETE /sandboxes/:sandboxID", () => {
-    it("returns 204 on success", async () => {
-      const res = await app.request("/sandboxes/sbx-test123", {
-        method: "DELETE",
-      });
-      expect(res.status).toBe(204);
-    });
+	describe("DELETE /sandboxes/:sandboxID", () => {
+		it("returns 204 on success", async () => {
+			const res = await app.request("/sandboxes/sbx-test123", {
+				method: "DELETE",
+			});
+			expect(res.status).toBe(204);
+		});
 
-    it("returns 404 for unknown sandbox", async () => {
-      (service.kill as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+		it("returns 404 for unknown sandbox", async () => {
+			(service.kill as ReturnType<typeof vi.fn>).mockResolvedValue(false);
 
-      const res = await app.request("/sandboxes/sbx-missing", {
-        method: "DELETE",
-      });
-      expect(res.status).toBe(404);
-    });
-  });
+			const res = await app.request("/sandboxes/sbx-missing", {
+				method: "DELETE",
+			});
+			expect(res.status).toBe(404);
+		});
+	});
 
-  describe("POST /sandboxes/:sandboxID/pause", () => {
-    it("returns 204 on success", async () => {
-      const res = await app.request("/sandboxes/sbx-test123/pause", {
-        method: "POST",
-      });
-      expect(res.status).toBe(204);
-    });
-  });
+	describe("POST /sandboxes/:sandboxID/pause", () => {
+		it("returns 204 on success", async () => {
+			const res = await app.request("/sandboxes/sbx-test123/pause", {
+				method: "POST",
+			});
+			expect(res.status).toBe(204);
+		});
+	});
 
-  describe("POST /sandboxes/:sandboxID/resume", () => {
-    it("returns 200 with connect response", async () => {
-      const res = await app.request("/sandboxes/sbx-test123/resume", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ timeout: 300 }),
-      });
+	describe("POST /sandboxes/:sandboxID/resume", () => {
+		const resume = () =>
+			app.request("/sandboxes/sbx-test123/resume", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ timeout: 300 }),
+			});
 
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.sandboxID).toBe("sbx-test123");
-    });
+		it("returns 201 with the connect response after resuming a paused sandbox", async () => {
+			vi.mocked(service.getInfo).mockResolvedValueOnce({
+				state: "paused",
+			} as never);
+			const res = await resume();
+			expect(res.status).toBe(201);
+			const body = (await res.json()) as Record<string, unknown>;
+			expect(body.sandboxID).toBe("sbx-test123");
+		});
 
-    it("returns 404 for unknown sandbox", async () => {
-      (service.connect as ReturnType<typeof vi.fn>).mockRejectedValue(
-        new NotFoundError("not found"),
-      );
+		it("returns 409 for a sandbox that is already running, as E2B does", async () => {
+			vi.mocked(service.getInfo).mockResolvedValueOnce({
+				state: "running",
+			} as never);
+			expect((await resume()).status).toBe(409);
+			expect(service.connect).not.toHaveBeenCalled();
+		});
 
-      const res = await app.request("/sandboxes/sbx-missing/resume", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ timeout: 300 }),
-      });
-      expect(res.status).toBe(404);
-    });
-  });
+		it("returns 404 for unknown sandbox", async () => {
+			(service.connect as ReturnType<typeof vi.fn>).mockRejectedValue(
+				new NotFoundError("not found"),
+			);
 
-  describe("POST /sandboxes/:sandboxID/timeout", () => {
-    it("returns 204 on success", async () => {
-      const res = await app.request("/sandboxes/sbx-test123/timeout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ timeout: 600 }),
-      });
-      expect(res.status).toBe(204);
-    });
-  });
+			const res = await app.request("/sandboxes/sbx-missing/resume", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ timeout: 300 }),
+			});
+			expect(res.status).toBe(404);
+		});
+	});
+
+	describe("POST /sandboxes/:sandboxID/timeout", () => {
+		it("returns 204 on success", async () => {
+			const res = await app.request("/sandboxes/sbx-test123/timeout", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ timeout: 600 }),
+			});
+			expect(res.status).toBe(204);
+		});
+	});
+
+	describe("POST /v2/sandboxes", () => {
+		it("creates a sandbox from the v2 body and returns 201", async () => {
+			const body = {
+				templateID: "base",
+				timeout: 300,
+				metadata: { platform: "linux" },
+				envVars: { FOO: "bar" },
+			};
+			const res = await app.request("/v2/sandboxes", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+			expect(res.status).toBe(201);
+			const json = (await res.json()) as Record<string, unknown>;
+			expect(json.sandboxID).toBe("sbx-test123");
+			expect(json.envdAccessToken).toBe("token-abc");
+			expect(service.create).toHaveBeenCalledWith(body, expect.any(Object));
+		});
+	});
+
+	describe("POST /sandboxes/:sandboxID/connect status", () => {
+		it("is 201 when it resumed a paused sandbox and 200 when it was running", async () => {
+			const connect = () =>
+				app.request("/sandboxes/sbx-test123/connect", { method: "POST" });
+			vi.mocked(service.getInfo).mockResolvedValueOnce({
+				state: "paused",
+			} as never);
+			expect((await connect()).status).toBe(201);
+			vi.mocked(service.getInfo).mockResolvedValueOnce({
+				state: "running",
+			} as never);
+			expect((await connect()).status).toBe(200);
+		});
+	});
+
+	describe("POST /v2/sandboxes/:sandboxID/connect", () => {
+		it("connects with the requested timeout", async () => {
+			const res = await app.request("/v2/sandboxes/sbx-test123/connect", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ timeout: 600 }),
+			});
+			expect([200, 201]).toContain(res.status);
+			const json = (await res.json()) as Record<string, unknown>;
+			expect(json.sandboxID).toBe("sbx-test123");
+			expect(service.connect).toHaveBeenCalledWith(
+				"sbx-test123",
+				600,
+				expect.any(Object),
+			);
+		});
+
+		it("accepts an omitted body, which v2 makes optional", async () => {
+			const res = await app.request("/v2/sandboxes/sbx-test123/connect", {
+				method: "POST",
+			});
+			expect([200, 201]).toContain(res.status);
+			expect(service.connect).toHaveBeenCalledWith(
+				"sbx-test123",
+				undefined,
+				expect.any(Object),
+			);
+		});
+
+		it("returns 404 for an unknown sandbox", async () => {
+			vi.mocked(service.connect).mockRejectedValueOnce(
+				new NotFoundError("Sandbox sbx-missing not found"),
+			);
+			const res = await app.request("/v2/sandboxes/sbx-missing/connect", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ timeout: 60 }),
+			});
+			expect(res.status).toBe(404);
+		});
+	});
+
+	describe("POST /sandboxes errors", () => {
+		const post = () =>
+			app.request("/sandboxes", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ templateID: "base" }),
+			});
+
+		it("returns 503 with Retry-After while the template image downloads", async () => {
+			vi.mocked(service.create).mockRejectedValueOnce(
+				new RetryableError("image is still downloading; retry shortly", 10),
+			);
+			const res = await post();
+			expect(res.status).toBe(503);
+			expect(res.headers.get("Retry-After")).toBe("10");
+			expect(res.headers.get("Should-Retry")).toBe("true");
+			const json = (await res.json()) as Record<string, unknown>;
+			expect(json.message).toMatch(/still downloading/);
+		});
+
+		it("returns 404 for an unknown template", async () => {
+			vi.mocked(service.create).mockRejectedValueOnce(
+				new NotFoundError('Template "nope" not found'),
+			);
+			const res = await post();
+			expect(res.status).toBe(404);
+		});
+
+		it("returns 500 with the cause for any other failure", async () => {
+			vi.spyOn(console, "error").mockImplementation(() => {});
+			vi.mocked(service.create).mockRejectedValueOnce(
+				new Error("pollUntil timed out after 30000ms"),
+			);
+			const res = await post();
+			expect(res.status).toBe(500);
+			const json = (await res.json()) as Record<string, unknown>;
+			expect(json.message).toBe("pollUntil timed out after 30000ms");
+		});
+
+		it("returns 400 for an unsupported request", async () => {
+			vi.mocked(service.create).mockRejectedValueOnce(
+				new UnsupportedError("volumeMounts is not supported"),
+			);
+			const res = await post();
+			expect(res.status).toBe(400);
+		});
+	});
+
+	describe("POST /sandboxes abandoned by the client", () => {
+		it("kills the sandbox when the client disconnected before creation finished", async () => {
+			const controller = new AbortController();
+			vi.mocked(service.create).mockImplementationOnce(async () => {
+				controller.abort();
+				return {
+					sandboxID: "sbx-orphan",
+					templateID: "base",
+					clientID: "sbx-orphan",
+					envdVersion: "0.5.3",
+					envdAccessToken: "token",
+					trafficAccessToken: null,
+					domain: null,
+				};
+			});
+			await app.request("/sandboxes", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ templateID: "base" }),
+				signal: controller.signal,
+			});
+			expect(service.kill).toHaveBeenCalledWith("sbx-orphan");
+		});
+
+		it("keeps the sandbox when the client is still connected", async () => {
+			await app.request("/sandboxes", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ templateID: "base" }),
+			});
+			expect(service.kill).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("POST /sandboxes/:sandboxID/pause body", () => {
+		it("keeps memory unless the body asks for a filesystem-only pause", async () => {
+			await app.request("/sandboxes/sbx-test123/pause", { method: "POST" });
+			expect(service.pause).toHaveBeenLastCalledWith("sbx-test123", true);
+
+			await app.request("/sandboxes/sbx-test123/pause", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ memory: false }),
+			});
+			expect(service.pause).toHaveBeenLastCalledWith("sbx-test123", false);
+		});
+	});
+
+	describe("GET /v2/sandboxes filters and pages", () => {
+		// Newest first, as SandboxService.list returns them.
+		const listed = (n: number) =>
+			Array.from({ length: n }, (_, i) => ({
+				sandboxID: `sbx-${i}`,
+				startedAt: new Date(Date.UTC(2026, 9, 28, 0, 0, 10 - i)).toISOString(),
+			}));
+		const ids = async (res: Response) =>
+			((await res.json()) as { sandboxID: string }[]).map((s) => s.sandboxID);
+
+		it("passes repeated or comma-separated state and URL-encoded metadata", async () => {
+			vi.mocked(service.list).mockResolvedValueOnce([]);
+			await app.request(
+				`/v2/sandboxes?state=running,paused&metadata=${encodeURIComponent("team=a&env=dev")}`,
+			);
+			expect(service.list).toHaveBeenCalledWith({
+				state: ["running", "paused"],
+				metadata: { team: "a", env: "dev" },
+			});
+		});
+
+		it("reports the running total across pages in X-Total-Running", async () => {
+			vi.mocked(service.list).mockResolvedValueOnce([
+				{ sandboxID: "a", state: "running" },
+				{ sandboxID: "b", state: "paused" },
+				{ sandboxID: "c", state: "running" },
+			] as never);
+			const res = await app.request("/v2/sandboxes?limit=1");
+			expect(res.headers.get("X-Total-Running")).toBe("2");
+		});
+
+		it("returns limit items and an x-next-token until the list is exhausted", async () => {
+			vi.mocked(service.list).mockResolvedValue(listed(5) as never);
+			const first = await app.request("/v2/sandboxes?limit=2");
+			expect(((await first.json()) as unknown[]).length).toBe(2);
+			const token = first.headers.get("x-next-token");
+			expect(token).toBeTruthy();
+
+			const second = await app.request(
+				`/v2/sandboxes?limit=2&nextToken=${token}`,
+			);
+			expect(await ids(second)).toEqual(["sbx-2", "sbx-3"]);
+			const third = await app.request(
+				`/v2/sandboxes?limit=2&nextToken=${second.headers.get("x-next-token")}`,
+			);
+			expect(await ids(third)).toEqual(["sbx-4"]);
+			expect(third.headers.get("x-next-token")).toBeNull();
+		});
+
+		it("neither repeats nor skips when sandboxes come and go between pages", async () => {
+			const all = listed(5);
+			vi.mocked(service.list).mockResolvedValue(all as never);
+			const first = await app.request("/v2/sandboxes?limit=2");
+			expect(await ids(first)).toEqual(["sbx-0", "sbx-1"]);
+
+			// A new sandbox arrives at the front: an offset would repeat sbx-1.
+			const newest = {
+				sandboxID: "sbx-new",
+				startedAt: "2026-10-28T00:01:00.000Z",
+			};
+			vi.mocked(service.list).mockResolvedValue([newest, ...all] as never);
+			const second = await app.request(
+				`/v2/sandboxes?limit=2&nextToken=${first.headers.get("x-next-token")}`,
+			);
+			expect(await ids(second)).toEqual(["sbx-2", "sbx-3"]);
+
+			// sbx-2 (on the page just served) goes: an offset would skip sbx-4.
+			vi.mocked(service.list).mockResolvedValue(
+				all.filter((s) => s.sandboxID !== "sbx-2") as never,
+			);
+			const third = await app.request(
+				`/v2/sandboxes?limit=2&nextToken=${second.headers.get("x-next-token")}`,
+			);
+			expect(await ids(third)).toEqual(["sbx-4"]);
+		});
+
+		it("rejects a foreign nextToken even when the page is empty", async () => {
+			vi.mocked(service.list).mockResolvedValue([] as never);
+			const token = Buffer.from("{}").toString("base64url");
+			const res = await app.request(`/v2/sandboxes?limit=2&nextToken=${token}`);
+			expect(res.status).toBe(400);
+		});
+
+		it("rejects a nextToken it did not issue", async () => {
+			vi.mocked(service.list).mockResolvedValue(listed(3) as never);
+			for (const token of [
+				"%%%",
+				// Well-formed JSON of the wrong shape: {}, null, a missing field.
+				Buffer.from("{}").toString("base64url"),
+				Buffer.from("null").toString("base64url"),
+				Buffer.from('{"sandboxID":"sbx-1"}').toString("base64url"),
+			]) {
+				const res = await app.request(
+					`/v2/sandboxes?limit=2&nextToken=${token}`,
+				);
+				expect(res.status).toBe(400);
+			}
+		});
+	});
+
+	describe("PUT /sandboxes/:sandboxID/network", () => {
+		const put = (body: unknown) =>
+			app.request("/sandboxes/sbx-test123/network", {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+
+		it("accepts a request that changes nothing", async () => {
+			expect(
+				(await put({ allow_internet_access: true, allowOut: [] })).status,
+			).toBe(204);
+		});
+
+		it("rejects egress rules and names them", async () => {
+			const res = await put({
+				allow_internet_access: false,
+				denyOut: ["0.0.0.0/0"],
+			});
+			expect(res.status).toBe(400);
+			const json = (await res.json()) as Record<string, unknown>;
+			expect(json.message).toMatch(/allow_internet_access, denyOut/);
+		});
+
+		it("returns 404 for an unknown sandbox", async () => {
+			vi.mocked(service.getInfo).mockResolvedValueOnce(null);
+			expect((await put({})).status).toBe(404);
+		});
+	});
+
+	describe("GET /sandboxes/metrics", () => {
+		it("returns the latest sample of each known sandbox", async () => {
+			const sample = { cpuCount: 2 };
+			(service as unknown as { metrics: ReturnType<typeof vi.fn> }).metrics =
+				vi.fn(async (id: string) => {
+					if (id === "sbx-gone") throw new NotFoundError("gone");
+					return [sample];
+				});
+			const res = await app.request(
+				"/sandboxes/metrics?sandbox_ids=sbx-a,sbx-gone",
+			);
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ sandboxes: { "sbx-a": sample } });
+		});
+	});
 });

@@ -1,0 +1,60 @@
+#!/bin/sh
+# Makes ports that listen only on loopback reachable from outside the
+# container, as E2B's envd does inside Firecracker: for each such port, socat
+# listens on the container's address and forwards to the loopback address.
+# Without socat or ss, there is nothing to do.
+command -v socat >/dev/null 2>&1 && command -v ss >/dev/null 2>&1 || exit 0
+
+addr=$(hostname -i 2>/dev/null | awk '{print $1}')
+[ -n "$addr" ] || exit 0
+# Only the host side (the sandbox proxy) may connect, never another sandbox on
+# the same bridge. Host traffic comes from the network's first two addresses,
+# which no container gets: the gateway on Linux, the network address on
+# OrbStack. A network created with a gateway elsewhere would refuse the proxy
+# too. Without the network, forward nothing.
+net=$(ip -4 route show scope link 2>/dev/null | awk '{print $1; exit}')
+[ -n "$net" ] || exit 0
+host_side="${net%/*}/31"
+state=/run/sandbox-portf
+mkdir -p "$state"
+
+while true; do
+	# "<port> <loopback host>" for ports whose only listeners are on loopback.
+	# Listeners on the container's own address are the forwards started here.
+	ss -Hltn 2>/dev/null | awk -v addr="$addr" '
+		{
+			n = split($4, parts, ":"); port = parts[n]
+			host = substr($4, 1, length($4) - length(port) - 1)
+			if (host ~ /^127\./ || host == "[::1]") {
+				if (!(port in loop) || host ~ /^127\./) loop[port] = host
+			} else if (host != addr) {
+				other[port] = 1
+			}
+		}
+		END { for (p in loop) if (!(p in other)) print p, loop[p] }
+	' >"$state/wanted"
+
+	while read -r port host; do
+		pidfile="$state/$port"
+		if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+			continue
+		fi
+		case "$host" in
+		"[::1]") target="TCP6:[::1]:$port" ;;
+		*) target="TCP4:$host:$port" ;;
+		esac
+		socat "TCP4-LISTEN:$port,bind=$addr,reuseaddr,fork,range=$host_side" "$target" &
+		echo $! >"$pidfile"
+	done <"$state/wanted"
+
+	# Stop forwards whose port no longer listens on loopback.
+	for pidfile in "$state"/[0-9]*; do
+		[ -f "$pidfile" ] || continue
+		port=${pidfile##*/}
+		if ! grep -q "^$port " "$state/wanted"; then
+			kill "$(cat "$pidfile")" 2>/dev/null
+			rm -f "$pidfile"
+		fi
+	done
+	sleep 1
+done

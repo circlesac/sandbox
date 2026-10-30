@@ -1,38 +1,51 @@
 {
-  "name": "@circlesac/sandbox",
-  "type": "module",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/circlesac/sandbox.git",
-    "directory": "cli"
-  },
-  "bin": {
-    "sandbox": "bin/sandbox"
-  },
-  "files": [
-    "bin"
-  ],
-  "scripts": {
-    "dev": "bun run src/index.ts",
-    "postinstall": "node bin/install.js",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
-    "lint": "npx @circlesac/lint --all"
-  },
-  "dependencies": {
-    "@asteasolutions/zod-to-openapi": "^8.4.1",
-    "chanfana": "^3.0.0",
-    "dockerode": "^4.0.9",
-    "hono": "^4.11.9",
-    "nanoid": "^5.1.6",
-    "zod": "^4.3.6"
-  },
-  "devDependencies": {
-    "@types/bun": "latest",
-    "@types/dockerode": "^4.0.1",
-    "e2b": "^2.31.0",
-    "typescript": "^5",
-    "vitest": "^4.0.18"
-  }
+	"name": "@circlesac/sandbox",
+	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/circlesac/sandbox.git",
+		"directory": "cli"
+	},
+	"bin": {
+		"sandbox": "bin/sandbox"
+	},
+	"files": [
+		"bin"
+	],
+	"scripts": {
+		"dev": "bun run src/index.ts",
+		"postinstall": "node bin/install.js",
+		"test": "bun run format:check && bun run lint && bun run typecheck && vitest run",
+		"test:watch": "vitest",
+		"test:unit": "vitest run test/unit",
+		"test:docker": "bun run scripts/test-providers.ts docker",
+		"test:tart": "bun run scripts/test-providers.ts tart",
+		"test:shuru": "bun run scripts/test-providers.ts shuru",
+		"test:sdk-matrix": "bun run scripts/sdk-matrix.ts",
+		"test:envd-lite": "cd ../envd-lite && go generate ./... && test -z \"$(gofmt -l main.go service)\" && go vet ./... && go test -race ./...",
+		"test:local": "bun run scripts/test-providers.ts local",
+		"test:upstream": "bun run scripts/upstream-conformance.ts",
+		"test:coverage": "vitest run --coverage",
+		"typecheck": "tsc --noEmit",
+		"format": "biome format --write .",
+		"format:check": "biome format .",
+		"lint": "biome lint ."
+	},
+	"dependencies": {
+		"@asteasolutions/zod-to-openapi": "^8.4.1",
+		"chanfana": "^3.0.0",
+		"dockerode": "^4.0.9",
+		"hono": "^4.11.9",
+		"nanoid": "^5.1.6",
+		"zod": "^4.3.6"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.6.3",
+		"@types/bun": "latest",
+		"@types/dockerode": "^4.0.1",
+		"@vitest/coverage-v8": "^4.1.12",
+		"e2b": "^2.31.0",
+		"typescript": "^5",
+		"vitest": "^4.1.12"
+	}
 }

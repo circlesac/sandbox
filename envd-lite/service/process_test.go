@@ -13,8 +13,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	procpb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/process"
-	procrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/process/processconnect"
+	procpb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/process"
+	procrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/process/processconnect"
 )
 
 func newProcessTestServer(t *testing.T) (procrpc.ProcessClient, *ProcessService, func()) {
@@ -725,6 +725,136 @@ func TestReplayBuffer_DropOldest(t *testing.T) {
 	}
 }
 
+// A background child that inherits stdout must not delay the End event: the
+// command's own exit decides when it ends, not the last writer on the pipe.
+func TestStart_BackgroundChildDoesNotDelayEnd(t *testing.T) {
+	client, _, stop := newProcessTestServer(t)
+	defer stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	started := time.Now()
+	stream, err := client.Start(ctx, connect.NewRequest(&procpb.StartRequest{
+		Process: &procpb.ProcessConfig{Cmd: "/bin/sh", Args: []string{"-c", "sleep 30 & echo started"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := collectStart(t, stream)
+	if err != nil {
+		t.Fatalf("stream failed after %s: %v", time.Since(started), err)
+	}
+
+	var pid uint32
+	var out strings.Builder
+	var end *procpb.ProcessEvent_EndEvent
+	for _, ev := range events {
+		switch e := ev.Event.(type) {
+		case *procpb.ProcessEvent_Start:
+			pid = e.Start.Pid
+		case *procpb.ProcessEvent_Data:
+			if s, ok := e.Data.Output.(*procpb.ProcessEvent_DataEvent_Stdout); ok {
+				out.Write(s.Stdout)
+			}
+		case *procpb.ProcessEvent_End:
+			end = e.End
+		}
+	}
+	// Kill the orphaned sleep via the process group so it does not outlive the test.
+	defer client.SendSignal(context.Background(), connect.NewRequest(&procpb.SendSignalRequest{
+		Process: &procpb.ProcessSelector{Selector: &procpb.ProcessSelector_Pid{Pid: pid}},
+		Signal:  procpb.Signal_SIGNAL_SIGKILL,
+	}))
+
+	if end == nil {
+		t.Fatalf("no end event after %s", time.Since(started))
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Errorf("end event took %s, want a few hundred ms at most", elapsed)
+	}
+	if end.ExitCode != 0 || !end.Exited {
+		t.Errorf("end=%+v want exit 0", end)
+	}
+	if !strings.Contains(out.String(), "started") {
+		t.Errorf("stdout missing 'started': %q", out.String())
+	}
+
+	// The process must no longer be listed as running.
+	resp, err := client.List(context.Background(), connect.NewRequest(&procpb.ListRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range resp.Msg.Processes {
+		if p.Pid == pid {
+			t.Errorf("pid %d still listed as running", pid)
+		}
+	}
+}
+
+// A subscriber that stalls while the process exits must still receive every
+// byte: the drain after exit is bounded by reader progress, not by a fixed
+// delay, so output left in the pipe while the reader is held in publish is
+// delivered before End.
+func TestStart_SlowSubscriberGetsAllOutputBeforeEnd(t *testing.T) {
+	_, svc, stop := newProcessTestServer(t)
+	defer stop()
+
+	const total = 2 << 20
+	// Wait for stdin so the slow subscriber is attached before any output.
+	proc, sub, err := svc.spawn(&procpb.ProcessConfig{
+		Cmd: "/bin/sh", Args: []string{"-c", "read go && head -c 2097152 /dev/zero"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc.unsubscribe(sub)
+
+	// Unbuffered, so the reader is blocked in publish until the test takes
+	// each event, as a subscriber behind a full channel or a slow stream.Send is.
+	slow := &subscriber{ch: make(chan *procpb.ProcessEvent), gone: make(chan struct{})}
+	proc.mu.Lock()
+	proc.subs[slow] = struct{}{}
+	proc.mu.Unlock()
+	defer proc.unsubscribe(slow)
+
+	if _, err := proc.stdin.Write([]byte("go\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	received := 0
+	var end *procpb.ProcessEvent_EndEvent
+	deadline := time.After(20 * time.Second)
+	for end == nil {
+		select {
+		case ev := <-slow.ch:
+			switch e := ev.Event.(type) {
+			case *procpb.ProcessEvent_Data:
+				if s, ok := e.Data.Output.(*procpb.ProcessEvent_DataEvent_Stdout); ok {
+					received += len(s.Stdout)
+				}
+			case *procpb.ProcessEvent_End:
+				end = e.End
+			}
+		case <-deadline:
+			t.Fatalf("no end event; received %d of %d bytes", received, total)
+		}
+		// Over the last 12 KiB the rest of the output fits in the pipe, so the
+		// process exits while this stall holds the reader in publish for
+		// longer than the 200 ms idle window.
+		if end == nil && received >= total-12*1024 {
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+
+	if received != total {
+		t.Errorf("received %d bytes before End, want %d", received, total)
+	}
+	if end.ExitCode != 0 || !end.Exited {
+		t.Errorf("end=%+v want exit 0", end)
+	}
+}
+
 // streamReader adapts ServerStreamForClient to io.Reader for cleanup drains.
 type streamReader struct {
 	s *connect.ServerStreamForClient[procpb.StartResponse]
@@ -739,4 +869,33 @@ func (r *streamReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return 0, nil
+}
+
+// A command that prints faster than the client reads must not lose output.
+func TestStart_ChattyOutputIsComplete(t *testing.T) {
+	client, _, stop := newProcessTestServer(t)
+	defer stop()
+	stream, err := client.Start(context.Background(), connect.NewRequest(&procpb.StartRequest{
+		Process: &procpb.ProcessConfig{Cmd: "/bin/sh", Args: []string{"-c", "seq 1 200000"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, _ := collectStart(t, stream)
+	var out strings.Builder
+	ended := false
+	for _, ev := range events {
+		switch e := ev.Event.(type) {
+		case *procpb.ProcessEvent_Data:
+			if s, ok := e.Data.Output.(*procpb.ProcessEvent_DataEvent_Stdout); ok {
+				out.Write(s.Stdout)
+			}
+		case *procpb.ProcessEvent_End:
+			ended = true
+		}
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if len(lines) != 200000 || lines[0] != "1" || lines[len(lines)-1] != "200000" || !ended {
+		t.Fatalf("got %d lines (first %q, last %q), ended=%v", len(lines), lines[0], lines[len(lines)-1], ended)
+	}
 }

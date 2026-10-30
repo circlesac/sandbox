@@ -22,25 +22,24 @@ Shuru uses [Apple Virtualization.framework](https://developer.apple.com/document
 - State is in-memory in the control plane; lost if `sandbox serve` restarts
 - `accessToken` not sent to envd (Alpine memguard incompatibility)
 - envd requires `-isnotfc` flag to disable Firecracker-specific behavior
+- The control plane checks the envd access token, since this envd runs without one
 
-**Checkpoint setup:**
+**Checkpoint setup** (verified with shuru 0.11.0, whose guest is Debian 13 on arm64):
 
 ```bash
-# Build envd for linux/arm64
-docker run --rm -v /tmp/envd-build:/out \
-  -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=arm64 \
-  golang:1.22-alpine sh -c \
-  'apk add git && git clone https://github.com/e2b-dev/infra /src && \
-   cd /src/packages/envd && go build -o /out/envd ./cmd/envd'
+# Build envd for linux/arm64 into a folder; shuru mounts only paths under the
+# current directory, so run the checkpoint step from inside it
+mkdir -p shuru-ctx
+docker run --rm -v "$PWD/shuru-ctx:/out" \
+  -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=arm64 golang:1.26 sh -c \
+  'git clone --depth 1 https://github.com/e2b-dev/runtime /src && \
+   cd /src/packages/envd && go build -o /out/envd .'
 
-# Serve the binary (in a separate terminal)
-cd /tmp/envd-build && python3 -m http.server 8080
-
-# Create checkpoint (192.168.64.1 is the shuru NAT gateway / host IP)
-shuru checkpoint create sandbox-base --allow-net -- sh -c \
-  'apk add --no-cache bash sudo curl wget && \
-   wget -O /usr/local/bin/envd http://192.168.64.1:8080/envd && \
-   chmod +x /usr/local/bin/envd'
+cd shuru-ctx
+shuru checkpoint create sandbox-base --allow-net --mount "$PWD:/mnt/ctx" -- sh -c \
+  'apt-get update && apt-get install -y bash sudo curl wget python3 python-is-python3 && \
+   install -m 0755 /mnt/ctx/envd /usr/local/bin/envd && \
+   (id -u user || useradd -m -s /bin/bash user) && chmod 0777 /tmp'
 ```
 
 **Configure:**

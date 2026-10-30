@@ -1,0 +1,69 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # GitHub-hosted on purpose: this public repository takes fork pull
+    # requests, whose code must not run on the organization's self-hosted runners.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Build the base image from this checkout, so changes to docker/sandbox
+      # are tested and sandbox creation never pulls from GHCR inside the SDK
+      # request (#15).
+      - name: Build the sandbox base image
+        run: docker build -t sandbox-base:latest ../docker/sandbox
+
+      - name: Format check, lint, type check, unit and Docker integration tests
+        run: bun run test
+
+      - name: E2B SDK version matrix
+        run: bun run test:sdk-matrix
+
+  envd-lite:
+    # Same reason as above: fork pull requests run here.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: envd-lite
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: envd-lite/go.mod
+          cache-dependency-path: envd-lite/go.sum
+
+      - name: Install code generators
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+          go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.21.1
+
+      - name: Generate, format check, vet, test
+        run: |
+          go generate ./...
+          unformatted="$(gofmt -l main.go service)"
+          if [ -n "$unformatted" ]; then echo "gofmt needed: $unformatted"; exit 1; fi
+          go vet ./...
+          go test -race ./...
