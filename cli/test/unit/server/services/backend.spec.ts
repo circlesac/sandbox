@@ -1,12 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../../../src/server/config.ts", () => ({
-	config: {
-		dockerSocket: "/var/run/docker.sock",
-		envdPort: 49983,
-		defaultTimeoutSec: 300,
-	},
-}));
+vi.mock("../../../../src/server/config.ts", async () => {
+	const { mkdtempSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	return {
+		config: {
+			dockerSocket: "/var/run/docker.sock",
+			envdPort: 49983,
+			defaultTimeoutSec: 300,
+			// Backends built with defaults keep state here, not in ~/.sandbox.
+			stateDir: mkdtempSync(join(tmpdir(), "sandbox-state-")),
+		},
+	};
+});
 
 import {
 	type BackendType,
