@@ -455,6 +455,13 @@ describe("sandbox controllers", () => {
 			expect(await ids(third)).toEqual(["sbx-4"]);
 		});
 
+		it("rejects a foreign nextToken even when the page is empty", async () => {
+			vi.mocked(service.list).mockResolvedValue([] as never);
+			const token = Buffer.from("{}").toString("base64url");
+			const res = await app.request(`/v2/sandboxes?limit=2&nextToken=${token}`);
+			expect(res.status).toBe(400);
+		});
+
 		it("rejects a nextToken it did not issue", async () => {
 			vi.mocked(service.list).mockResolvedValue(listed(3) as never);
 			for (const token of [

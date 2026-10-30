@@ -43,11 +43,11 @@ function listFilters(c: Context) {
  * token holds the last item's sort key, not an offset, so a sandbox created
  * or removed between pages neither repeats nor skips another.
  */
-function page<T>(
+function page<T extends object>(
 	c: Context,
 	items: T[],
 	compare: (a: T, b: T) => number,
-	keyOf: (item: T) => Partial<T>,
+	keyFields: (keyof T & string)[],
 ): T[] {
 	const limit = Number(c.req.query("limit") ?? 0) || items.length;
 	const token = c.req.query("nextToken");
@@ -58,12 +58,11 @@ function page<T>(
 		try {
 			const after = JSON.parse(Buffer.from(token, "base64url").toString()) as T;
 			if (!after || typeof after !== "object") throw new Error();
-			// Every field the key holds must be there, as this server wrote it.
-			const sample = items[0];
-			if (sample !== undefined) {
-				for (const [field, value] of Object.entries(keyOf(sample))) {
-					const given = (after as Record<string, unknown>)[field];
-					if (typeof given !== typeof value) throw new Error();
+			// Every field of the key must be a string, as this server wrote it,
+			// whether or not this page has items.
+			for (const field of keyFields) {
+				if (typeof (after as Record<string, unknown>)[field] !== "string") {
+					throw new Error();
 				}
 			}
 			rest = items.filter((item) => compare(item, after) > 0);
@@ -76,7 +75,11 @@ function page<T>(
 	if (last !== undefined && rest.length > limit) {
 		c.header(
 			"x-next-token",
-			Buffer.from(JSON.stringify(keyOf(last))).toString("base64url"),
+			Buffer.from(
+				JSON.stringify(
+					Object.fromEntries(keyFields.map((field) => [field, last[field]])),
+				),
+			).toString("base64url"),
 		);
 	}
 	return slice;
@@ -115,10 +118,7 @@ export const ListSandboxesFiltered = endpoint(
 			String(all.filter((s) => s.state === "running").length),
 		);
 		return c.json(
-			page(c, all, bySandboxOrder, ({ startedAt, sandboxID }) => ({
-				startedAt,
-				sandboxID,
-			})),
+			page(c, all, bySandboxOrder, ["startedAt", "sandboxID"]),
 			200,
 		);
 	},
@@ -180,10 +180,7 @@ export const ListSnapshots = endpoint(
 				c.req.query("name"),
 			)
 		).sort(bySnapshotId);
-		return c.json(
-			page(c, all, bySnapshotId, ({ snapshotID }) => ({ snapshotID })),
-			200,
-		);
+		return c.json(page(c, all, bySnapshotId, ["snapshotID"]), 200);
 	},
 );
 

@@ -16,7 +16,12 @@ import {
 } from "./backend.ts";
 import type { EnvdService } from "./envd.ts";
 import { type CreateOptions, lifecycleFromCreate } from "./lifecycle.ts";
-import { clearPortCache, clearRoutes, registerToken } from "./proxy.ts";
+import {
+	clearPortCache,
+	clearRoutes,
+	forgetTokensExcept,
+	registerToken,
+} from "./proxy.ts";
 import type { TtlService } from "./ttl.ts";
 
 export interface CreateRequest extends CreateOptions {
@@ -327,6 +332,8 @@ export class SandboxService {
 		// Only a sandbox this server knows: never another container by its name.
 		if (!found) return false;
 		const result = await found.backend.removeContainer(sandboxId);
+		// A reconcile that listed it before the removal may have re-added it.
+		clearPortCache(sandboxId);
 		this._sandboxPlatform.delete(sandboxId);
 		return result;
 	}
@@ -729,8 +736,10 @@ export class SandboxService {
 			);
 		}
 		const { info } = found;
-		if (info.state !== "running") {
-			throw new ConflictError(`Sandbox ${sandboxId} is paused`);
+		// A pause under way already dropped the timeout; extending it now
+		// would leave a timer on a paused sandbox.
+		if (this.pauses.has(lifecycleKey(sandboxId)) || info.state !== "running") {
+			throw new ConflictError(`Sandbox ${sandboxId} is paused or pausing`);
 		}
 		const remaining =
 			(new Date(info.timeoutFrom).getTime() +
@@ -755,6 +764,11 @@ export class SandboxService {
 		// The proxy finds a sandbox by its access token; after a restart that
 		// map is empty, so fill it from what the backends report.
 		for (const sb of all) registerToken(sb.accessToken, sb.sandboxId);
+		// And forget sandboxes no backend reports, such as a Tart runner that
+		// finished and was cleaned up by its backend.
+		forgetTokensExcept(
+			new Set([...all.map((sb) => sb.sandboxId), ...this.creating]),
+		);
 		// One still being created gets its timeout when it is ready, not now:
 		// counted from creation, it could pause or kill the sandbox mid-boot.
 		const sandboxes = all.filter(

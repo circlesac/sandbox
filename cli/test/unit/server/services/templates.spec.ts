@@ -276,6 +276,32 @@ describe("TemplateService", () => {
 		expect(status.reason?.message).toMatch(/invalid environment variable name/);
 	});
 
+	it("marks a build with an unsupported registry as failed", async () => {
+		const { docker } = fakeDocker();
+		const service = new TemplateService(docker, filesDir);
+		const { templateID, buildID } = service.requestBuild({ name: "reg" });
+		await expect(
+			service.startBuild(templateID, buildID, {
+				fromImage: "private/app",
+				fromImageRegistry: { type: "aws" },
+			}),
+		).rejects.toBeInstanceOf(UnsupportedError);
+		expect(service.status(templateID, buildID).status).toBe("error");
+	});
+
+	it("marks a build on an unknown template as failed instead of waiting forever", async () => {
+		const { docker } = fakeDocker();
+		vi.mocked(docker.resolveImage).mockRejectedValueOnce(
+			new NotFoundError('Template "nope" not found'),
+		);
+		const service = new TemplateService(docker, filesDir);
+		const { templateID, buildID } = service.requestBuild({ name: "on-nope" });
+		await expect(
+			service.startBuild(templateID, buildID, { fromTemplate: "nope" }),
+		).rejects.toBeInstanceOf(NotFoundError);
+		expect(service.status(templateID, buildID).status).toBe("error");
+	});
+
 	it("reports a failed build with its reason and log offsets", async () => {
 		const { docker } = fakeDocker(() => {
 			throw new Error(

@@ -207,6 +207,8 @@ export class TartBackend implements ContainerBackend {
 	private statePath: string | null;
 	/** Pauses under way; outside them a running VM is not paused, whatever the state file says. */
 	private pausing = new Set<string>();
+	/** Resumes under way: the VM already runs while the sandbox is still paused. */
+	private resuming = new Set<string>();
 	/** Stored running VMs whose proxy is being rebuilt, so it is built once. */
 	private attaching = new Map<string, Promise<void>>();
 
@@ -400,7 +402,8 @@ export class TartBackend implements ContainerBackend {
 		return (
 			vmState === "stopped" &&
 			!instance.paused &&
-			!this.starting.has(instance.vmName)
+			!this.starting.has(instance.vmName) &&
+			!this.resuming.has(instance.sandboxId)
 		);
 	}
 
@@ -426,7 +429,13 @@ export class TartBackend implements ContainerBackend {
 	 * running again, or it would get no envd forwarding until it expired.
 	 */
 	private clearStalePause(instance: TartInstance): void {
-		if (!instance.paused || this.pausing.has(instance.sandboxId)) return;
+		if (
+			!instance.paused ||
+			this.pausing.has(instance.sandboxId) ||
+			this.resuming.has(instance.sandboxId)
+		) {
+			return;
+		}
 		instance.paused = false;
 		this.persistState();
 	}
@@ -454,7 +463,34 @@ export class TartBackend implements ContainerBackend {
 		if (!instance) {
 			throw new Error(`Sandbox "${sandboxId}" not found`);
 		}
+		// While it resumes, the VM runs but the sandbox is still paused; the
+		// stale-pause and finished-runner checks must not act on it.
+		this.resuming.add(sandboxId);
+		try {
+			return await this.resumeVm(instance);
+		} catch (err) {
+			// A resume that failed leaves the sandbox paused. A VM it started is
+			// stopped again (keeping its disk), so nothing runs that no one can
+			// use; a VM that never left suspension is left as it is.
+			const state = (await tartList()).find(
+				(v) => v.name === instance.vmName,
+			)?.state;
+			if (state === "running") {
+				await tartExec(["stop", instance.vmName]).catch(() => {});
+			}
+			instance.proxy?.close();
+			instance.proxy = undefined;
+			instance.paused = true;
+			this.persistState();
+			throw err;
+		} finally {
+			this.resuming.delete(sandboxId);
+		}
+	}
 
+	private async resumeVm(
+		instance: TartInstance,
+	): Promise<{ hostPort: number }> {
 		const vms = await tartList();
 		const vm = vms.find((v) => v.name === instance.vmName);
 		const wasRunning = vm?.state === "running";
@@ -503,9 +539,11 @@ export class TartBackend implements ContainerBackend {
 			);
 		}
 
-		// Wait for envd-lite to become healthy (suspended resume is near-instant)
+		// Wait for envd-lite to become healthy, on a time budget rather than a
+		// count of rounds, since a refused connection returns at once.
+		const healthDeadline = Date.now() + (coldBoot ? 120_000 : 30_000);
 		let healthy = false;
-		for (let i = 0; i < (coldBoot ? 60 : 30) && !healthy; i++) {
+		while (!healthy && Date.now() < healthDeadline) {
 			try {
 				const res = await fetch(`http://${vmIp}:${config.envdPort}/health`, {
 					signal: AbortSignal.timeout(2_000),

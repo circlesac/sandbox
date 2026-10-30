@@ -423,6 +423,14 @@ describe("SandboxService", () => {
 			);
 		});
 
+		it("forgets the token of a sandbox no backend reports any more", async () => {
+			const gone = await service.create({});
+			// Removed behind the service's back, as a Tart runner that finished.
+			backend.sandboxes.delete(gone.sandboxID);
+			await service.reconcile();
+			expect(resolveSandboxByToken(gone.envdAccessToken ?? "")).toBeUndefined();
+		});
+
 		it("reconciling again does not touch paused sandboxes or loop", async () => {
 			const { sandboxID } = await service.create({
 				timeout: 10,
@@ -560,6 +568,25 @@ describe("SandboxService", () => {
 				`start ${sandboxID}`,
 				`frozen ${sandboxID}`,
 			]);
+		});
+
+		it("refuses to refresh a sandbox while it is pausing", async () => {
+			const { sandboxID } = await service.create({});
+			let release = () => {};
+			backend.stopGate = new Promise((r) => {
+				release = r;
+			});
+			const pausing = service.pause(sandboxID);
+			await vi.advanceTimersByTimeAsync(0);
+			await expect(service.refresh(sandboxID, 600)).rejects.toBeInstanceOf(
+				ConflictError,
+			);
+			release();
+			backend.stopGate = null;
+			await pausing;
+			// No timer was left on the paused sandbox.
+			await vi.advanceTimersByTimeAsync(700_000);
+			expect(backend.stateOf(sandboxID)).toBe("frozen");
 		});
 
 		it("rejects changing the timeout of a paused sandbox", async () => {

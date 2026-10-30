@@ -546,12 +546,12 @@ describe("TartBackend", () => {
 	});
 
 	describe("resuming a VM whose envd-lite never answers", () => {
-		it("fails the resume instead of reporting a running sandbox", async () => {
+		const addPaused = (id: string) =>
 			(backend as unknown as { instances: Map<string, unknown> }).instances.set(
-				"sbx-mute",
+				id,
 				{
-					sandboxId: "sbx-mute",
-					vmName: "sandbox-sbx-mute",
+					sandboxId: id,
+					vmName: `sandbox-${id}`,
 					hostPort: 1,
 					accessToken: "t",
 					templateId: "base",
@@ -562,33 +562,78 @@ describe("TartBackend", () => {
 					paused: true,
 				},
 			);
+
+		it("fails the resume within its time budget, stops the VM, and stays paused", async () => {
+			addPaused("sbx-mute");
+			let vmState = "suspended";
 			execSyncMock.mockImplementation((cmd: string) => {
 				if (cmd.startsWith("tart list")) {
-					return JSON.stringify([
-						{ Name: "sandbox-sbx-mute", State: "suspended" },
-					]);
+					return JSON.stringify([{ Name: "sandbox-sbx-mute", State: vmState }]);
 				}
-				if (cmd.startsWith("tart ip")) return "192.168.64.7";
+				if (cmd.startsWith("tart ip")) {
+					vmState = "running";
+					return "192.168.64.7";
+				}
 				return "";
 			});
-			vi.useRealTimers();
-			const originalSetTimeout = globalThis.setTimeout;
 			const originalFetch = globalThis.fetch;
-			globalThis.setTimeout = ((fn: () => void) =>
-				originalSetTimeout(fn, 0)) as typeof setTimeout;
 			globalThis.fetch = vi
 				.fn()
 				.mockRejectedValue(
 					new Error("ECONNREFUSED"),
 				) as unknown as typeof fetch;
+			vi.useFakeTimers();
 			try {
-				await expect(backend.startContainer("sbx-mute")).rejects.toThrow(
-					/did not become healthy after resume/,
+				const failed = expect(
+					backend.startContainer("sbx-mute"),
+				).rejects.toThrow(/did not become healthy after resume/);
+				// Refused connections return at once; the budget is time, not rounds.
+				await vi.advanceTimersByTimeAsync(29_000);
+				expect(execSyncMock).not.toHaveBeenCalledWith(
+					"tart stop sandbox-sbx-mute",
+					expect.anything(),
 				);
+				await vi.advanceTimersByTimeAsync(2_000);
+				await failed;
 			} finally {
-				globalThis.setTimeout = originalSetTimeout;
+				vi.useRealTimers();
 				globalThis.fetch = originalFetch;
 			}
+			expect(execSyncMock).toHaveBeenCalledWith(
+				"tart stop sandbox-sbx-mute",
+				expect.anything(),
+			);
+			vmState = "stopped";
+			expect((await backend.inspectSandbox("sbx-mute"))?.state).toBe("paused");
+		});
+
+		it("does not treat a VM that is resuming as a stale pause or a finished runner", async () => {
+			addPaused("sbx-wake");
+			execSyncMock.mockImplementation((cmd: string) =>
+				cmd.startsWith("tart list")
+					? JSON.stringify([{ Name: "sandbox-sbx-wake", State: "running" }])
+					: "",
+			);
+			held.set("tart ip", () => {});
+			const resuming = backend.startContainer("sbx-wake").catch(() => {});
+			await vi.waitFor(() =>
+				expect(execMock).toHaveBeenCalledWith(
+					expect.stringMatching(/^tart ip/),
+					expect.anything(),
+					expect.any(Function),
+				),
+			);
+			// Mid-resume: the VM runs, the sandbox is still paused.
+			await backend.inspectSandbox("sbx-wake");
+			expect(
+				(
+					backend as unknown as {
+						instances: Map<string, { paused?: boolean; proxy?: unknown }>;
+					}
+				).instances.get("sbx-wake")?.paused,
+			).toBe(true);
+			held.clear();
+			void resuming;
 		});
 	});
 

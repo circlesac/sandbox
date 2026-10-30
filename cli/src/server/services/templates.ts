@@ -163,21 +163,21 @@ export class TemplateService {
 				`Build ${buildID} of template ${templateID} not found`,
 			);
 		}
-		if (body.fromImageRegistry) {
-			throw new UnsupportedError(
-				"fromImageRegistry (private registry credentials)",
-			);
-		}
 		// The image to build on (or, for a plain image, to take the agent from),
 		// resolved as Sandbox.create resolves a template: a snapshot's bare name
 		// means its "default" tag.
-		const baseImage = body.fromImage
-			? await this.docker.resolveImage("base")
-			: body.fromTemplate
-				? await this.docker.resolveImage(body.fromTemplate)
-				: "";
 		let context: string;
 		try {
+			if (body.fromImageRegistry) {
+				throw new UnsupportedError(
+					"fromImageRegistry (private registry credentials)",
+				);
+			}
+			const baseImage = body.fromImage
+				? await this.docker.resolveImage("base")
+				: body.fromTemplate
+					? await this.docker.resolveImage(body.fromTemplate)
+					: "";
 			context = this.prepareContext(body, baseImage);
 		} catch (err) {
 			// The build cannot start: say so to anyone polling its status,

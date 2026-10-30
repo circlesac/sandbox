@@ -73,6 +73,13 @@ export function clearPortCache(sandboxId?: string): void {
 	}
 }
 
+/** Drops the tokens of every sandbox not in `sandboxIds`. */
+export function forgetTokensExcept(sandboxIds: Set<string>): void {
+	for (const [token, id] of tokenCache) {
+		if (!sandboxIds.has(id)) tokenCache.delete(token);
+	}
+}
+
 export function resolveSandboxByToken(accessToken: string): string | undefined {
 	return tokenCache.get(accessToken);
 }
@@ -148,7 +155,15 @@ async function lookupRoute(
 		return proxyError(c, 502, `Sandbox ${id} not found`);
 	}
 	if (found.info.state !== "running") {
-		if (!(await sandboxes.resumeForTraffic(id))) {
+		let resumed: boolean;
+		try {
+			resumed = await sandboxes.resumeForTraffic(id);
+		} catch (err) {
+			// A resume that failed is the sandbox's problem, not a server error.
+			const reason = err instanceof Error ? err.message : String(err);
+			return proxyError(c, 502, `Sandbox ${id} could not resume: ${reason}`);
+		}
+		if (!resumed) {
 			return proxyError(
 				c,
 				502,

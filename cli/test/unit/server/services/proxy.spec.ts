@@ -265,6 +265,20 @@ describe("handleProxyRequest", () => {
 		expect(sandboxes.get("sbx-a")?.state).toBe("running");
 	});
 
+	it("answers 502, not 500, when resuming on traffic fails", async () => {
+		const { sandboxes, deps, request } = setup(true);
+		sandboxes.set("sbx-a", {
+			state: "paused",
+			lifecycle: lifecycle({ autoPause: true, autoResume: true }),
+		});
+		vi.mocked(deps.resumeForTraffic).mockRejectedValueOnce(
+			new Error("envd-lite did not become healthy after resume"),
+		);
+		const res = await request({ sandboxId: "sbx-a", port: 3000 }, "/");
+		expect(res.status).toBe(502);
+		expect(await res.text()).toContain("could not resume");
+	});
+
 	it("keeps a paused sandbox paused without autoResume and says how to resume", async () => {
 		const { sandboxes, request } = setup(true);
 		sandboxes.set("sbx-a", {
