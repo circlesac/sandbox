@@ -1,16 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { Sandbox } from "e2b";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, inject } from "vitest";
 
-const SERVER_INFO_PATH = "/tmp/sandbox-integration-test.json";
-
-const serverInfo: { port: number; apiKey: string } | null = existsSync(
-	SERVER_INFO_PATH,
-)
-	? JSON.parse(readFileSync(SERVER_INFO_PATH, "utf-8"))
-	: null;
+const serverInfo = inject("sandboxIntegrationServer");
 
 const url = serverInfo ? `http://localhost:${serverInfo.port}` : "";
 const opts = serverInfo
@@ -40,6 +33,7 @@ function viaHeaders(
 	headers: Record<string, string> = {},
 ) {
 	return fetch(`${url}/`, {
+		signal: AbortSignal.timeout(2_000),
 		headers: {
 			"E2b-Sandbox-Id": sandboxId,
 			"E2b-Sandbox-Port": String(port),

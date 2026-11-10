@@ -44,6 +44,7 @@ describe.skipIf(skip)("Shuru E2B Smoke", { timeout: 180_000 }, () => {
 	let serverProcess: ChildProcess | undefined;
 	let opts: { apiUrl: string; apiKey: string; sandboxUrl: string };
 	let sandbox: Sandbox;
+	const created: string[] = [];
 
 	beforeAll(async () => {
 		const port = await findFreePort();
@@ -63,6 +64,7 @@ describe.skipIf(skip)("Shuru E2B Smoke", { timeout: 180_000 }, () => {
 				ENVD_PROXY_PORT: String(envdProxyPort),
 				API_KEYS: TEST_API_KEY,
 				SANDBOX_BACKEND: "shuru",
+				SANDBOX_MACOS_BACKEND: "",
 				// Never the user's ~/.sandbox state: a test server would overwrite it.
 				SANDBOX_STATE_DIR: mkdtempSync(join(tmpdir(), "sandbox-state-")),
 			},
@@ -87,13 +89,7 @@ describe.skipIf(skip)("Shuru E2B Smoke", { timeout: 180_000 }, () => {
 	}, 60_000);
 
 	afterAll(async () => {
-		try {
-			const paginator = Sandbox.list(opts);
-			const all = await paginator.nextItems();
-			await Promise.allSettled(all.map((s) => Sandbox.kill(s.sandboxId, opts)));
-		} catch {
-			// best-effort cleanup
-		}
+		await Promise.allSettled(created.map((id) => Sandbox.kill(id, opts)));
 		serverProcess?.kill("SIGTERM");
 	});
 
@@ -102,6 +98,7 @@ describe.skipIf(skip)("Shuru E2B Smoke", { timeout: 180_000 }, () => {
 	describe("Lifecycle", () => {
 		it("creates a sandbox", async () => {
 			sandbox = await Sandbox.create("base", opts);
+			created.push(sandbox.sandboxId);
 			expect(sandbox.sandboxId).toMatch(/^sbx-/);
 		});
 
@@ -182,7 +179,9 @@ describe.skipIf(skip)("Shuru E2B Smoke", { timeout: 180_000 }, () => {
 	describe("Isolation", () => {
 		it("has isolated filesystems between sandboxes", async () => {
 			const sbA = await Sandbox.create("base", opts);
+			created.push(sbA.sandboxId);
 			const sbB = await Sandbox.create("base", opts);
+			created.push(sbB.sandboxId);
 
 			await sbA.files.write("/tmp/isolated.txt", "sandbox-a");
 			const resultB = await sbB.commands.run(

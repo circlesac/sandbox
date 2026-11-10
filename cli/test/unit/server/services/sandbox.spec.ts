@@ -364,6 +364,56 @@ describe("SandboxService", () => {
 		});
 	});
 
+	describe("cancel creation", () => {
+		it("removes a container allocated after DELETE returned and drops its token and timer", async () => {
+			const create = backend.createContainer.bind(backend);
+			let release = () => {};
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			vi.spyOn(backend, "createContainer").mockImplementation(async (opts) => {
+				await gate;
+				return create(opts);
+			});
+			const created = await service.createAsync({});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(backend.sandboxes.size).toBe(0);
+			const killed = await service.kill(`${created.sandboxID}-6532622b`);
+			release();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(backend.stateOf(created.sandboxID)).toBe("removed");
+			expect(killed).toBe(true);
+			expect(
+				resolveSandboxByToken(created.envdAccessToken ?? ""),
+			).toBeUndefined();
+			expect(envd.init).not.toHaveBeenCalled();
+			expect(vi.getTimerCount()).toBe(0);
+			await service.reconcile();
+			await vi.advanceTimersByTimeAsync(600_000);
+			expect(backend.sandboxes.size).toBe(0);
+		});
+
+		it("does not register a token or timeout when DELETE interrupts envd initialization", async () => {
+			let release = () => {};
+			envd.init.mockImplementationOnce(
+				() =>
+					new Promise<void>((r) => {
+						release = r;
+					}),
+			);
+			const created = await service.createAsync({});
+			await vi.advanceTimersByTimeAsync(0);
+			await service.kill(created.sandboxID);
+			release();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(backend.stateOf(created.sandboxID)).toBe("removed");
+			expect(
+				resolveSandboxByToken(created.envdAccessToken ?? ""),
+			).toBeUndefined();
+			expect(vi.getTimerCount()).toBe(0);
+		});
+	});
+
 	describe("restart", () => {
 		it("re-arms running sandboxes from the persisted anchor and expires overdue ones", async () => {
 			const fresh = await service.create({ timeout: 100 });
@@ -381,6 +431,29 @@ describe("SandboxService", () => {
 			expect(backend.stateOf(fresh.sandboxID)).toBe("running");
 			await vi.advanceTimersByTimeAsync(1);
 			expect(backend.stateOf(fresh.sandboxID)).toBe("removed");
+		});
+
+		it("keeps the refreshed timeout when reconcile was given an older snapshot", async () => {
+			const { sandboxID } = await service.create({ timeout: 100 });
+			const snapshot = await backend.listSandboxes();
+			let release = () => {};
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			vi.spyOn(backend, "listSandboxes").mockImplementationOnce(async () => {
+				await gate;
+				return snapshot;
+			});
+			const reconcile = service.reconcile();
+			await service.setTimeout(sandboxID, 200);
+			release();
+			await reconcile;
+			await vi.advanceTimersByTimeAsync(100_000);
+			expect(backend.stateOf(sandboxID)).toBe("running");
+			await vi.advanceTimersByTimeAsync(99_999);
+			expect(backend.stateOf(sandboxID)).toBe("running");
+			await vi.advanceTimersByTimeAsync(1);
+			expect(backend.stateOf(sandboxID)).toBe("removed");
 		});
 
 		it("leaves a sandbox that is still booting alone, and times it from when it is ready", async () => {

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import { execFile, execSync } from "node:child_process";
 import {
 	existsSync,
@@ -152,39 +154,32 @@ function tartIp(vmName: string, waitSec = 30): Promise<string> {
 	);
 }
 
-function findFreePort(): Promise<number> {
-	return new Promise((resolve, reject) => {
-		const srv = createServer();
-		srv.listen(0, () => {
-			const addr = srv.address();
-			if (!addr || typeof addr === "string") {
-				srv.close();
-				return reject(new Error("Failed to get port"));
-			}
-			const { port } = addr;
-			srv.close(() => resolve(port));
-		});
-		srv.on("error", reject);
-	});
-}
-
-/** Create a TCP proxy forwarding localhost:localPort → vmIp:remotePort */
+/** Bind the actual proxy once, on loopback, without releasing its allocated port. */
 function createTcpProxy(
-	localPort: number,
 	remoteHost: string,
 	remotePort: number,
-): ReturnType<typeof createServer> {
-	const server = createServer((clientSocket: Socket) => {
-		const upstream = connect(remotePort, remoteHost);
-		clientSocket.pipe(upstream);
-		upstream.pipe(clientSocket);
-		clientSocket.on("error", () => upstream.destroy());
-		upstream.on("error", () => clientSocket.destroy());
-		clientSocket.on("close", () => upstream.destroy());
-		upstream.on("close", () => clientSocket.destroy());
+): Promise<{ server: ReturnType<typeof createServer>; port: number }> {
+	return new Promise((resolve, reject) => {
+		const server = createServer((clientSocket: Socket) => {
+			const upstream = connect(remotePort, remoteHost);
+			clientSocket.pipe(upstream);
+			upstream.pipe(clientSocket);
+			clientSocket.on("error", () => upstream.destroy());
+			upstream.on("error", () => clientSocket.destroy());
+			clientSocket.on("close", () => upstream.destroy());
+			upstream.on("close", () => clientSocket.destroy());
+		});
+		server.on("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			if (!address || typeof address === "string") {
+				server.close();
+				reject(new Error("Failed to get proxy port"));
+				return;
+			}
+			resolve({ server, port: address.port });
+		});
 	});
-	server.listen(localPort);
-	return server;
 }
 
 export class TartBackend implements ContainerBackend {
@@ -198,6 +193,12 @@ export class TartBackend implements ContainerBackend {
 	// the control plane keeps checking as well.
 	readonly envdAcceptsAccessToken = true;
 	private instances = new Map<string, TartInstance>();
+	// A separate state directory owns a separate VM namespace. In particular,
+	// a test server must never sweep the persistent control plane's VMs.
+	private vmPrefix =
+		config.stateDir && config.stateDir !== join(homedir(), ".sandbox")
+			? `sandbox-${createHash("sha256").update(config.stateDir).digest("hex").slice(0, 12)}-`
+			: "sandbox-";
 	/**
 	 * VMs being cloned and booted. Until they run they list as stopped, and
 	 * the cleanup in listSandboxes must not mistake them for finished or
@@ -253,7 +254,7 @@ export class TartBackend implements ContainerBackend {
 	async createContainer(
 		opts: CreateContainerOpts,
 	): Promise<{ instanceId: string; hostPort: number }> {
-		const vmName = `sandbox-${opts.sandboxId}`;
+		const vmName = `${this.vmPrefix}${opts.sandboxId}`;
 		this.starting.add(vmName);
 		try {
 			return await this.createVm(opts, vmName);
@@ -385,9 +386,9 @@ export class TartBackend implements ContainerBackend {
 		vmIp: string,
 	): Promise<void> {
 		instance.proxy?.close();
-		const hostPort = await findFreePort();
-		instance.proxy = createTcpProxy(hostPort, vmIp, config.envdPort);
-		instance.hostPort = hostPort;
+		const { server, port } = await createTcpProxy(vmIp, config.envdPort);
+		instance.proxy = server;
+		instance.hostPort = port;
 		instance.vmIp = vmIp;
 	}
 
@@ -544,6 +545,14 @@ export class TartBackend implements ContainerBackend {
 		const healthDeadline = Date.now() + (coldBoot ? 120_000 : 30_000);
 		let healthy = false;
 		while (!healthy && Date.now() < healthDeadline) {
+			// DHCP can still return a suspended VM's old address after restore
+			// failed. Preserve tart's error instead of hiding it behind a timeout.
+			if (run && run.exitCode !== null) {
+				const reason = (await runError).trim();
+				throw new Error(
+					`Tart VM "${instance.vmName}" did not resume: ${reason || `tart run exited with code ${run.exitCode}`}`,
+				);
+			}
 			try {
 				const res = await fetch(`http://${vmIp}:${config.envdPort}/health`, {
 					signal: AbortSignal.timeout(2_000),
@@ -770,8 +779,8 @@ export class TartBackend implements ContainerBackend {
 		// sandboxes read from the state file) nor the starting set.
 		for (const vm of vms) {
 			if (
-				vm.name.startsWith("sandbox-sbx-") &&
-				!this.instances.has(vm.name.replace("sandbox-", "")) &&
+				vm.name.startsWith(`${this.vmPrefix}sbx-`) &&
+				!this.instances.has(vm.name.slice(this.vmPrefix.length)) &&
 				!this.starting.has(vm.name)
 			) {
 				if (vm.state === "stopped" || vm.state === "suspended") {

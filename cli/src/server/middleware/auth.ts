@@ -7,8 +7,8 @@ export const authMiddleware = createMiddleware(async (c, next) => {
 	// E2B SDK sends Authorization: Bearer <key>
 	if (!apiKey) {
 		const auth = c.req.header("Authorization");
-		if (auth?.startsWith("Bearer ")) {
-			apiKey = auth.slice(7);
+		if (auth) {
+			apiKey = auth.match(/^Bearer +(.+)$/i)?.[1];
 		}
 	}
 

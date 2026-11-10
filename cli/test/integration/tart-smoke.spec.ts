@@ -42,6 +42,7 @@ const skip = providers.tart.missing() !== null;
 
 describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 	let serverProcess: ChildProcess | undefined;
+	let proxyPort: number;
 	let opts: {
 		apiUrl: string;
 		apiKey: string;
@@ -50,10 +51,12 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 		metadata: Record<string, string>;
 	};
 	let sandbox: Sandbox;
+	const created: string[] = [];
 
 	beforeAll(async () => {
 		const port = await findFreePort();
 		const envdProxyPort = await findFreePort();
+		proxyPort = envdProxyPort;
 		const serverEntry = join(
 			__dirname,
 			"..",
@@ -69,6 +72,7 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 				ENVD_PROXY_PORT: String(envdProxyPort),
 				API_KEYS: TEST_API_KEY,
 				SANDBOX_MACOS_BACKEND: "tart",
+				SANDBOX_BACKEND: "docker",
 				// Never the user's ~/.sandbox state: a test server would overwrite it.
 				SANDBOX_STATE_DIR: mkdtempSync(join(tmpdir(), "sandbox-state-")),
 			},
@@ -95,13 +99,7 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 	}, 120_000);
 
 	afterAll(async () => {
-		try {
-			const paginator = Sandbox.list(opts);
-			const all = await paginator.nextItems();
-			await Promise.allSettled(all.map((s) => Sandbox.kill(s.sandboxId, opts)));
-		} catch {
-			// best-effort cleanup
-		}
+		await Promise.allSettled(created.map((id) => Sandbox.kill(id, opts)));
 		serverProcess?.kill("SIGTERM");
 	});
 
@@ -112,6 +110,7 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 			// This sandbox lives for the whole suite, which can outlast the
 			// default 300 s (it took 406 s under coverage instrumentation).
 			sandbox = await Sandbox.create("base", { ...opts, timeoutMs: 1_800_000 });
+			created.push(sandbox.sandboxId);
 			expect(sandbox.sandboxId).toMatch(/^sbx-/);
 		});
 
@@ -196,6 +195,7 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 			headers: Record<string, string> = {},
 		) =>
 			fetch(`${opts.apiUrl}/`, {
+				signal: AbortSignal.timeout(10_000),
 				headers: {
 					"E2b-Sandbox-Id": id,
 					"E2b-Sandbox-Port": String(port),
@@ -206,10 +206,43 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 			for (let i = 0; i < 60; i++) {
 				const res = await viaHeaders(id, port).catch(() => null);
 				if (res?.status === 200) return res;
+				if (res?.status === 502) {
+					const message = await res.text();
+					if (message.includes("could not resume")) throw new Error(message);
+				}
 				await new Promise((r) => setTimeout(r, 500));
 			}
 			throw new Error(`port ${port} never answered`);
 		}
+
+		it("binds the raw VM envd forward only to loopback", () => {
+			const sockets = spawnSync(
+				"lsof",
+				[
+					"-nP",
+					"-a",
+					"-p",
+					String(serverProcess?.pid),
+					"-iTCP",
+					"-sTCP:LISTEN",
+					"-Fn",
+				],
+				{ encoding: "utf-8" },
+			);
+			expect(sockets.status).toBe(0);
+			const publicPorts = [new URL(opts.apiUrl).port, String(proxyPort)];
+			const forwards = sockets.stdout
+				.split("\n")
+				.filter((line) => line.startsWith("n"))
+				.map((line) => line.slice(1))
+				.filter(
+					(address) =>
+						!publicPorts.some((port) => address.endsWith(`:${port}`)),
+				);
+			expect(forwards.length).toBeGreaterThan(0);
+			for (const address of forwards)
+				expect(address).toMatch(/^127\.0\.0\.1:\d+$/);
+		});
 
 		it("reports envd-lite's API version", async () => {
 			const info = await Sandbox.getInfo(sandbox.sandboxId, opts);
@@ -259,7 +292,12 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 				}).stdout;
 				const vm = (
 					JSON.parse(vmState) as { Name: string; State: string }[]
-				).find((v) => v.Name === `sandbox-${resumable.sandboxId}`);
+				).find(
+					(v) =>
+						v.Name.startsWith("sandbox-") &&
+						v.Name.endsWith(`-${resumable.sandboxId}`),
+				);
+				expect(vm).toBeDefined();
 				if (vm?.State === "stopped") {
 					// The paused sandbox still resumes on traffic, from its disk.
 					const echo = await resumable.commands.run("echo resumed");
@@ -267,7 +305,34 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 					ctx.skip("this host cannot save Tart VM state (tart suspend fails)");
 				}
 
-				const res = await waitForOk(resumable.sandboxId, 3001);
+				let res: Response;
+				try {
+					res = await waitForOk(resumable.sandboxId, 3001);
+				} catch (err) {
+					// A host can save memory yet refuse to restore it. Verify that
+					// the failed resume keeps the sandbox paused and its disk intact.
+					if (
+						!/VZErrorDomain.*failed to restore.*permission denied/.test(
+							String(err),
+						)
+					)
+						throw err;
+					expect((await Sandbox.getInfo(resumable.sandboxId, opts)).state).toBe(
+						"paused",
+					);
+					const after = JSON.parse(
+						spawnSync("tart", ["list", "--format", "json"], {
+							encoding: "utf-8",
+						}).stdout,
+					) as { Name: string; State: string }[];
+					expect(after.find((v) => v.Name === vm?.Name)?.State).toBe(
+						"suspended",
+					);
+					ctx.skip(
+						"this host refuses to restore Tart VM memory (VZErrorDomain: permission denied)",
+					);
+					return;
+				}
 				expect(await res.text()).toBe("ok");
 				expect((await Sandbox.getInfo(resumable.sandboxId, opts)).state).toBe(
 					"running",

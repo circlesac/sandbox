@@ -35,6 +35,26 @@ describe("authMiddleware", () => {
 		expect(res.status).toBe(200);
 	});
 
+	it.each(["Bearer", "bearer", "bEaReR"])(
+		"accepts %s authentication scheme",
+		async (scheme) => {
+			const res = await app.request("/test", {
+				headers: { Authorization: `${scheme} test-key-1` },
+			});
+			expect(res.status).toBe(200);
+		},
+	);
+
+	it.each(["bearer wrong-key", "Basic test-key-1", "Bearertest-key-1"])(
+		"rejects invalid authorization %s",
+		async (authorization) => {
+			const res = await app.request("/test", {
+				headers: { Authorization: authorization },
+			});
+			expect(res.status).toBe(401);
+		},
+	);
+
 	it("rejects missing API key", async () => {
 		const res = await app.request("/test");
 		expect(res.status).toBe(401);

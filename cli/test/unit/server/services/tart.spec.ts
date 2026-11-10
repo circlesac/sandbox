@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { config } from "../../../../src/server/config.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,7 +47,10 @@ vi.mock("node:child_process", () => ({
 // Mock net for port allocation and TCP proxy
 const mockPort = 54321;
 const mockProxyServer = {
-	listen: vi.fn(),
+	listen: vi.fn((_port: number, _host: string, ready?: () => void) =>
+		ready?.(),
+	),
+	address: () => ({ port: mockPort }),
 	close: vi.fn(),
 	on: vi.fn(),
 };
@@ -87,6 +92,62 @@ describe("TartBackend", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		backend = new TartBackend({ statePath: null });
+	});
+
+	it("sweeps only unclaimed VMs in its state directory's namespace", async () => {
+		const original = config.stateDir;
+		const dir = mkdtempSync(join(tmpdir(), "tart-namespace-"));
+		try {
+			config.stateDir = dir;
+			const prefix = `sandbox-${createHash("sha256").update(dir).digest("hex").slice(0, 12)}-`;
+			writeFileSync(
+				join(dir, "tart-instances.json"),
+				JSON.stringify({
+					"sbx-claimed": {
+						sandboxId: "sbx-claimed",
+						vmName: `${prefix}sbx-claimed`,
+						accessToken: "example-token",
+						templateId: "base",
+						createdAt: "2026-10-28T00:00:00Z",
+						timeoutFrom: "2026-10-28T00:00:00Z",
+						timeoutSec: 300,
+						lifecycle: LEGACY_LIFECYCLE,
+						paused: true,
+					},
+				}),
+			);
+			execSyncMock.mockImplementation((command: string) =>
+				command.startsWith("tart list")
+					? JSON.stringify([
+							{ Name: "sandbox-sbx-other", State: "running" },
+							{ Name: `${prefix}sbx-orphan`, State: "stopped" },
+							{ Name: `${prefix}sbx-claimed`, State: "suspended" },
+						])
+					: "",
+			);
+			expect(
+				(await new TartBackend().listSandboxes()).map((sb) => sb.sandboxId),
+			).toEqual(["sbx-claimed"]);
+			expect(execSyncMock).not.toHaveBeenCalledWith(
+				"tart stop sandbox-sbx-other",
+				expect.anything(),
+			);
+			expect(execSyncMock).not.toHaveBeenCalledWith(
+				"tart delete sandbox-sbx-other",
+				expect.anything(),
+			);
+			expect(execSyncMock).not.toHaveBeenCalledWith(
+				`tart delete ${prefix}sbx-claimed`,
+				expect.anything(),
+			);
+			expect(execSyncMock).toHaveBeenCalledWith(
+				`tart delete ${prefix}sbx-orphan`,
+				expect.anything(),
+			);
+		} finally {
+			config.stateDir = original;
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("has type tart", () => {
@@ -179,6 +240,11 @@ describe("TartBackend", () => {
 				{ stdio: ["ignore", "ignore", "pipe"] },
 			);
 
+			expect(mockProxyServer.listen).toHaveBeenCalledWith(
+				0,
+				"127.0.0.1",
+				expect.any(Function),
+			);
 			// envd goes through the local proxy; other ports to the VM's address
 			expect(await backend.resolveTarget("sbx-test1", 49983)).toEqual({
 				host: "localhost",
@@ -638,6 +704,62 @@ describe("TartBackend", () => {
 	});
 
 	describe("resuming when tart cannot start the VM", () => {
+		it("reports a failed memory restore even when DHCP still returns the old IP", async () => {
+			(backend as unknown as { instances: Map<string, unknown> }).instances.set(
+				"sbx-restore",
+				{
+					sandboxId: "sbx-restore",
+					vmName: "sandbox-sbx-restore",
+					hostPort: 1,
+					accessToken: "t",
+					templateId: "base",
+					createdAt: new Date().toISOString(),
+					timeoutFrom: new Date().toISOString(),
+					timeoutSec: 300,
+					lifecycle: LEGACY_LIFECYCLE,
+					paused: true,
+				},
+			);
+			execSyncMock.mockImplementation((cmd: string) => {
+				if (cmd.startsWith("tart list"))
+					return JSON.stringify([
+						{ Name: "sandbox-sbx-restore", State: "suspended" },
+					]);
+				if (cmd.startsWith("tart ip")) return "192.168.64.7";
+				return "";
+			});
+			spawnMock.mockImplementation(() => ({
+				...mockProc,
+				exitCode: 1,
+				stderr: new Response("VZErrorDomain Code=12: restore permission denied")
+					.body,
+			}));
+			vi.stubGlobal(
+				"fetch",
+				vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
+			);
+			vi.useFakeTimers();
+			try {
+				const failed = backend
+					.startContainer("sbx-restore")
+					.catch((err: unknown) => err);
+				await vi.advanceTimersByTimeAsync(33_000);
+				expect(String(await failed)).toMatch(/restore permission denied/);
+				expect(vi.getTimerCount()).toBe(0);
+				expect((await backend.inspectSandbox("sbx-restore"))?.state).toBe(
+					"paused",
+				);
+				expect(execSyncMock).not.toHaveBeenCalledWith(
+					"tart delete sandbox-sbx-restore",
+					expect.anything(),
+				);
+			} finally {
+				vi.useRealTimers();
+				vi.unstubAllGlobals();
+				spawnMock.mockReset().mockReturnValue(mockProc);
+			}
+		});
+
 		it("tries again, then reports tart's own error", async () => {
 			(backend as unknown as { instances: Map<string, unknown> }).instances.set(
 				"sbx-r",

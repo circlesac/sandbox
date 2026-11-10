@@ -1,15 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
 import { Sandbox } from "e2b";
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, afterAll, inject } from "vitest";
 
-const SERVER_INFO_PATH = "/tmp/sandbox-integration-test.json";
-
-function loadServerInfo(): { port: number; apiKey: string } | null {
-	if (!existsSync(SERVER_INFO_PATH)) return null;
-	return JSON.parse(readFileSync(SERVER_INFO_PATH, "utf-8"));
-}
-
-const serverInfo = loadServerInfo();
+const serverInfo = inject("sandboxIntegrationServer");
 
 const opts = serverInfo
 	? {
@@ -21,17 +13,10 @@ const opts = serverInfo
 
 describe.skipIf(!opts)("E2B Smoke", { timeout: 120_000 }, () => {
 	let sandbox: Sandbox;
+	const created: string[] = [];
 
 	afterAll(async () => {
-		try {
-			const paginator = Sandbox.list(opts!);
-			const all = await paginator.nextItems();
-			await Promise.allSettled(
-				all.map((s) => Sandbox.kill(s.sandboxId, opts!)),
-			);
-		} catch {
-			// best-effort cleanup
-		}
+		await Promise.allSettled(created.map((id) => Sandbox.kill(id, opts)));
 	});
 
 	// ── Lifecycle ──────────────────────────────────────────────
@@ -39,6 +24,7 @@ describe.skipIf(!opts)("E2B Smoke", { timeout: 120_000 }, () => {
 	describe("Lifecycle", () => {
 		it("creates a sandbox", async () => {
 			sandbox = await Sandbox.create("base", opts!);
+			created.push(sandbox.sandboxId);
 			expect(sandbox.sandboxId).toMatch(/^sbx-/);
 		});
 
@@ -170,6 +156,7 @@ describe.skipIf(!opts)("E2B Smoke", { timeout: 120_000 }, () => {
 	describe("Multiple Sandboxes", () => {
 		it("runs two sandboxes concurrently", async () => {
 			const sandbox2 = await Sandbox.create("base", opts!);
+			created.push(sandbox2.sandboxId);
 			expect(sandbox2.sandboxId).not.toBe(sandbox.sandboxId);
 
 			const [r1, r2] = await Promise.all([
@@ -184,7 +171,9 @@ describe.skipIf(!opts)("E2B Smoke", { timeout: 120_000 }, () => {
 
 		it("has isolated filesystems between sandboxes", async () => {
 			const sbA = await Sandbox.create("base", opts!);
+			created.push(sbA.sandboxId);
 			const sbB = await Sandbox.create("base", opts!);
+			created.push(sbB.sandboxId);
 
 			await sbA.files.write("/tmp/isolated.txt", "sandbox-a");
 			const resultB = await sbB.commands.run(

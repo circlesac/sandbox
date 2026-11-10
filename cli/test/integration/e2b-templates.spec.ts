@@ -1,17 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Sandbox, Template } from "e2b";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, inject } from "vitest";
 
-const SERVER_INFO_PATH = "/tmp/sandbox-integration-test.json";
-
-const serverInfo: { port: number; apiKey: string } | null = existsSync(
-	SERVER_INFO_PATH,
-)
-	? JSON.parse(readFileSync(SERVER_INFO_PATH, "utf-8"))
-	: null;
+const serverInfo = inject("sandboxIntegrationServer");
 
 const url = serverInfo ? `http://localhost:${serverInfo.port}` : "";
 const opts = serverInfo

@@ -1,17 +1,22 @@
 import { tmpdir } from "node:os";
-import {
-	createWriteStream,
-	existsSync,
-	mkdtempSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { createWriteStream, mkdtempSync } from "node:fs";
 import { createServer } from "node:net";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
+import type { TestProject } from "vitest/node";
 
-const SERVER_INFO_PATH = "/tmp/sandbox-integration-test.json";
 const TEST_API_KEY = "e2b_0000000000000000000000000000000000000000";
+
+export interface IntegrationServerInfo {
+	port: number;
+	apiKey: string;
+}
+
+declare module "vitest" {
+	interface ProvidedContext {
+		sandboxIntegrationServer?: IntegrationServerInfo;
+	}
+}
 
 function findFreePort(): Promise<number> {
 	return new Promise((resolve, reject) => {
@@ -44,7 +49,7 @@ async function waitForHealth(port: number, timeoutMs = 30_000) {
 
 let serverProcess: ChildProcess | undefined;
 
-export default async function setup() {
+export default async function setup(project: TestProject) {
 	// Check Docker availability
 	const docker = spawnSync("docker", ["info"], { stdio: "ignore" });
 	if (docker.status !== 0) {
@@ -60,6 +65,7 @@ export default async function setup() {
 	}
 
 	const port = await findFreePort();
+	const stateDir = mkdtempSync(join(tmpdir(), "sandbox-state-"));
 
 	// Spawn the server as a Bun subprocess
 	const serverEntry = join(__dirname, "..", "src", "server", "index.ts");
@@ -72,8 +78,9 @@ export default async function setup() {
 			// This server tests Docker. With Tart enabled it would treat the Tart
 			// suite's VMs as orphans and delete them.
 			SANDBOX_MACOS_BACKEND: "",
+			SANDBOX_BACKEND: "docker",
 			// Never the user's ~/.sandbox state: a test server would overwrite it.
-			SANDBOX_STATE_DIR: mkdtempSync(join(tmpdir(), "sandbox-state-")),
+			SANDBOX_STATE_DIR: stateDir,
 		},
 		stdio: "pipe",
 	});
@@ -81,10 +88,8 @@ export default async function setup() {
 	serverProcess.stderr?.on("data", (data: Buffer) => {
 		process.stderr.write(`[server] ${data}`);
 	});
-	// Its request log, kept for diagnosing a failure: tmpdir()/sandbox-integration-server.log
-	serverProcess.stdout?.pipe(
-		createWriteStream(join(tmpdir(), "sandbox-integration-server.log")),
-	);
+	// Keep each run's request log separate, including after teardown.
+	serverProcess.stdout?.pipe(createWriteStream(join(stateDir, "server.log")));
 
 	try {
 		await waitForHealth(port);
@@ -95,18 +100,19 @@ export default async function setup() {
 		throw err;
 	}
 
-	writeFileSync(
-		SERVER_INFO_PATH,
-		JSON.stringify({ port, apiKey: TEST_API_KEY }),
+	project.provide("sandboxIntegrationServer", {
+		port,
+		apiKey: TEST_API_KEY,
+	});
+	console.log(
+		`[global-setup] Integration server on :${port}; log: ${join(stateDir, "server.log")}`,
 	);
-	console.log(`[global-setup] Integration server on :${port}`);
 
 	return async function teardown() {
 		if (serverProcess) {
 			serverProcess.kill("SIGTERM");
 			serverProcess = undefined;
 		}
-		if (existsSync(SERVER_INFO_PATH)) unlinkSync(SERVER_INFO_PATH);
 		console.log("[global-setup] Integration server stopped");
 	};
 }

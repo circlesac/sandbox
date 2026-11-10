@@ -4,11 +4,11 @@ import { pollUntil } from "../lib/retry.ts";
 export class EnvdService {
 	async waitForHealth(hostPort: number): Promise<void> {
 		await pollUntil(
-			async () => {
+			async (signal) => {
 				// Each probe is bounded: an envd that accepts but never answers
 				// (a VM still resuming) would otherwise hold the poll forever.
 				const res = await fetch(`http://localhost:${hostPort}/health`, {
-					signal: AbortSignal.timeout(2_000),
+					signal: AbortSignal.any([signal, AbortSignal.timeout(2_000)]),
 				});
 				if (!res.ok && res.status !== 204) {
 					throw new Error(`envd health check returned ${res.status}`);

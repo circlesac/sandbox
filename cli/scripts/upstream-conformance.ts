@@ -133,6 +133,8 @@ async function main() {
 			PORT: String(port),
 			ENVD_PROXY_PORT: String(port),
 			API_KEYS: API_KEY,
+			SANDBOX_BACKEND: "docker",
+			SANDBOX_MACOS_BACKEND: "",
 			// Never the user's ~/.sandbox state: this server would overwrite it.
 			SANDBOX_STATE_DIR: mkdtempSync(join(tmpdir(), "sandbox-state-")),
 		},

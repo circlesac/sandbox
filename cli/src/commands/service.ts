@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readConfig, SANDBOX_DIR } from "../lib/config.ts";
@@ -11,7 +11,9 @@ const LOG_DIR = join(SANDBOX_DIR, "logs");
 function getBinaryPath(): string {
 	// Prefer the linked binary in PATH
 	try {
-		const resolved = execSync("which sandbox", { encoding: "utf-8" }).trim();
+		const resolved = execFileSync("which", ["sandbox"], {
+			encoding: "utf-8",
+		}).trim();
 		if (resolved) return resolved;
 	} catch {}
 	// Fallback to the bin in this project
@@ -29,6 +31,11 @@ function buildPlist(binaryPath: string): string {
 
 	// Forward relevant env vars if set
 	for (const key of [
+		"API_KEYS",
+		"PORT",
+		"SANDBOX_BACKEND",
+		"SANDBOX_STATE_DIR",
+		"ENVD_HEALTH_TIMEOUT_MS",
 		"SANDBOX_MACOS_BACKEND",
 		"DOCKER_SOCKET",
 		"DEFAULT_TIMEOUT_SEC",
@@ -36,7 +43,8 @@ function buildPlist(binaryPath: string): string {
 		"ENVD_PROXY_PORT",
 		"DOMAIN",
 	]) {
-		if (process.env[key]) envVars[key] = process.env[key]!;
+		const value = process.env[key];
+		if (value !== undefined) envVars[key] = value;
 	}
 
 	const envEntries = Object.entries(envVars)
@@ -102,7 +110,7 @@ function install() {
 	writeFileSync(PLIST_PATH, plist);
 	console.log(`Created ${PLIST_PATH}`);
 
-	execSync(`launchctl load ${PLIST_PATH}`);
+	execFileSync("launchctl", ["load", PLIST_PATH]);
 	console.log(`Service loaded and started.`);
 	console.log(
 		`\nLogs:\n  stdout: ${join(LOG_DIR, "sandbox.out.log")}\n  stderr: ${join(LOG_DIR, "sandbox.err.log")}`,
@@ -121,10 +129,20 @@ function uninstall() {
 	}
 
 	try {
-		execSync(`launchctl unload ${PLIST_PATH}`);
+		execFileSync("launchctl", ["unload", PLIST_PATH]);
 		console.log("Service unloaded.");
-	} catch {
-		// May already be unloaded
+	} catch (unloadError) {
+		try {
+			execFileSync("launchctl", ["list", LABEL], { stdio: "pipe" });
+		} catch (listError) {
+			// launchctl's ESRCH means the job is already absent. Any other
+			// error leaves its loaded state unknown, so keep the plist.
+			if ((listError as { status?: number }).status !== 113) throw listError;
+			unlinkSync(PLIST_PATH);
+			console.log(`Removed ${PLIST_PATH}`);
+			return;
+		}
+		throw unloadError;
 	}
 
 	unlinkSync(PLIST_PATH);
@@ -143,7 +161,9 @@ function status() {
 	}
 
 	try {
-		const output = execSync(`launchctl list ${LABEL}`, { encoding: "utf-8" });
+		const output = execFileSync("launchctl", ["list", LABEL], {
+			encoding: "utf-8",
+		});
 		console.log(`Service is installed at ${PLIST_PATH}\n`);
 		console.log(output);
 	} catch {

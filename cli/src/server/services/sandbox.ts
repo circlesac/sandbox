@@ -46,6 +46,8 @@ export class SandboxService {
 	private pauses = new Map<string, Promise<boolean>>();
 	/** Sandboxes still being created; their timeout starts once they are ready. */
 	private creating = new Set<string>();
+	/** A DELETE during boot must also remove resources created after it returned. */
+	private cancelledCreates = new Set<string>();
 	/** The last pause or connect of each sandbox; the next one waits for it. */
 	private lifecycleOps = new Map<string, Promise<unknown>>();
 
@@ -132,6 +134,7 @@ export class SandboxService {
 			await this.serialize(p.sandboxId, () => this.bootNow(req, p));
 		} finally {
 			this.creating.delete(p.sandboxId);
+			this.cancelledCreates.delete(p.sandboxId);
 		}
 	}
 
@@ -139,19 +142,20 @@ export class SandboxService {
 		req: CreateRequest,
 		p: ReturnType<SandboxService["prepare"]>,
 	): Promise<void> {
-		const { hostPort } = await p.backend.createContainer({
-			sandboxId: p.sandboxId,
-			accessToken: p.accessToken,
-			templateId: p.templateId,
-			imageTemplateId: req.imageTemplateID,
-			timeoutSec: p.timeoutSec,
-			envVars: req.envVars,
-			metadata: req.metadata,
-			lifecycle: p.lifecycle,
-		});
-		this._sandboxPlatform.set(p.sandboxId, p.platform);
-
 		try {
+			this.checkCreateCancelled(p.sandboxId);
+			const { hostPort } = await p.backend.createContainer({
+				sandboxId: p.sandboxId,
+				accessToken: p.accessToken,
+				templateId: p.templateId,
+				imageTemplateId: req.imageTemplateID,
+				timeoutSec: p.timeoutSec,
+				envVars: req.envVars,
+				metadata: req.metadata,
+				lifecycle: p.lifecycle,
+			});
+			this.checkCreateCancelled(p.sandboxId);
+			this._sandboxPlatform.set(p.sandboxId, p.platform);
 			await this.envd.waitForHealth(hostPort);
 			await this.envd.init(hostPort, {
 				accessToken: this.envdToken(
@@ -165,14 +169,24 @@ export class SandboxService {
 				},
 			});
 			await p.backend.runTemplateStart?.(p.sandboxId);
+			this.checkCreateCancelled(p.sandboxId);
 		} catch (err) {
 			await p.backend.removeContainer(p.sandboxId).catch(() => {});
 			this._sandboxPlatform.delete(p.sandboxId);
+			clearPortCache(p.sandboxId);
 			throw err;
 		}
 
 		registerToken(p.accessToken, p.sandboxId);
 		this.ttl.start(p.sandboxId, p.timeoutSec, () => this.expire(p.sandboxId));
+	}
+
+	private checkCreateCancelled(sandboxId: string): void {
+		if (this.cancelledCreates.has(sandboxId)) {
+			throw new ConflictError(
+				`Sandbox ${sandboxId} was killed during creation`,
+			);
+		}
 	}
 
 	/**
@@ -325,12 +339,17 @@ export class SandboxService {
 	}
 
 	async kill(sandboxId: string): Promise<boolean> {
+		const key = lifecycleKey(sandboxId);
+		if (this.creating.has(key)) {
+			this.cancelledCreates.add(key);
+			clearPortCache(key);
+		}
 		const { id, found } = await this.find(sandboxId);
 		sandboxId = id;
 		this.ttl.clear(sandboxId);
 		clearPortCache(sandboxId);
 		// Only a sandbox this server knows: never another container by its name.
-		if (!found) return false;
+		if (!found) return this.creating.has(key);
 		const result = await found.backend.removeContainer(sandboxId);
 		// A reconcile that listed it before the removal may have re-added it.
 		clearPortCache(sandboxId);
@@ -704,6 +723,17 @@ export class SandboxService {
 	}
 
 	async setTimeout(sandboxId: string, timeoutSec: number): Promise<void> {
+		if (this.pauses.has(lifecycleKey(sandboxId)))
+			throw new ConflictError(`Sandbox ${sandboxId} is paused or pausing`);
+		return this.serialize(sandboxId, () =>
+			this.setTimeoutNow(sandboxId, timeoutSec),
+		);
+	}
+
+	private async setTimeoutNow(
+		sandboxId: string,
+		timeoutSec: number,
+	): Promise<void> {
 		const { id, found } = await this.find(sandboxId);
 		sandboxId = id;
 		const timeout = this.timeoutWithinLimit(timeoutSec, 0);
@@ -727,6 +757,17 @@ export class SandboxService {
 	 * shortens it (POST /sandboxes/{id}/refreshes).
 	 */
 	async refresh(sandboxId: string, durationSec: number): Promise<void> {
+		if (this.pauses.has(lifecycleKey(sandboxId)))
+			throw new ConflictError(`Sandbox ${sandboxId} is paused or pausing`);
+		return this.serialize(sandboxId, () =>
+			this.refreshNow(sandboxId, durationSec),
+		);
+	}
+
+	private async refreshNow(
+		sandboxId: string,
+		durationSec: number,
+	): Promise<void> {
 		const { id, found } = await this.find(sandboxId);
 		sandboxId = id;
 		const duration = this.timeoutWithinLimit(durationSec, 0);
@@ -775,18 +816,28 @@ export class SandboxService {
 			(sb) => sb.state === "running" && !this.creating.has(sb.sandboxId),
 		);
 		for (const sb of sandboxes) {
-			const remaining =
-				(new Date(sb.timeoutFrom).getTime() +
-					sb.timeoutSec * 1000 -
-					Date.now()) /
-				1000;
-			if (remaining <= 0) {
-				await this.expire(sb.sandboxId);
-			} else {
+			const overdue = await this.serialize(sb.sandboxId, async () => {
+				// Listing can predate a timeout extension or pause. Inspect inside
+				// the lifecycle queue so stale state cannot replace its new timer.
+				const current = await this.locate(sb.sandboxId);
+				if (
+					current?.info.state !== "running" ||
+					this.creating.has(sb.sandboxId)
+				)
+					return false;
+				const remaining =
+					(new Date(current.info.timeoutFrom).getTime() +
+						current.info.timeoutSec * 1000 -
+						Date.now()) /
+					1000;
+				if (remaining <= 0) return true;
 				this.ttl.start(sb.sandboxId, remaining, () =>
 					this.expire(sb.sandboxId),
 				);
-			}
+				return false;
+			});
+			// expire joins the same queue and checks its deadline again.
+			if (overdue) await this.expire(sb.sandboxId);
 		}
 		return sandboxes.length;
 	}
