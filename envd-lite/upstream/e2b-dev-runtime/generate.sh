@@ -6,12 +6,12 @@
 #   go install connectrpc.com/connect/cmd/protoc-gen-connect-go@latest
 #   brew install protobuf  # for protoc
 #
-# Source: https://github.com/e2b-dev/infra/tree/main/packages/envd/spec
+# Source: https://github.com/e2b-dev/runtime/tree/main/packages/envd/spec
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-GEN="github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen"
+GEN="github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen"
 
 rm -rf gen
 mkdir -p gen

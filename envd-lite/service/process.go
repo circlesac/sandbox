@@ -15,8 +15,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/creack/pty"
 
-	procpb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/process"
-	procrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/process/processconnect"
+	procpb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/process"
+	procrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/process/processconnect"
 )
 
 // replayLimitBytes caps the per-process replay buffer used for Connect
@@ -31,7 +31,8 @@ const readChunkSize = 4096
 var pidCounter atomic.Uint32
 
 type subscriber struct {
-	ch chan *procpb.ProcessEvent
+	ch   chan *procpb.ProcessEvent
+	gone chan struct{} // closed by unsubscribe
 }
 
 type runningProc struct {
@@ -50,19 +51,62 @@ type runningProc struct {
 	endOnce  sync.Once
 	endEvent *procpb.ProcessEvent
 	done     chan struct{}
+
+	// stdoutR/stderrR are the parent's read ends of the output pipes. They
+	// are plain os.Pipe files owned here, not cmd.StdoutPipe, so cmd.Wait
+	// neither closes them nor waits on them; reap does, after the process
+	// has exited and the readers had a chance to drain.
+	stdoutR, stderrR *os.File
+
+	// readers tracks the stdout/stderr (or PTY) pumps. reap waits for them
+	// before publishing End so that End follows every data event.
+	readers   []*outputReader
+	readersWG sync.WaitGroup
 }
 
-// publish fans out an event to all current subscribers (best-effort, drops on
-// slow consumers) and appends to the replay buffer trimmed to replayLimitBytes.
+// outputReader records one output pump's progress so reap can tell a reader
+// that is still delivering output (draining the pipe, or held in publish by a
+// slow subscriber) from one that sits in Read on a pipe a lingering child
+// keeps open without writing to it.
+type outputReader struct {
+	inRead     atomic.Bool  // set while blocked in Read
+	lastActive atomic.Int64 // UnixNano of the last read or completed publish
+	eof        atomic.Bool  // Read returned an error; the pump has exited
+}
+
+func newOutputReader() *outputReader {
+	r := &outputReader{}
+	r.touch()
+	return r
+}
+
+func (r *outputReader) touch() {
+	r.lastActive.Store(time.Now().UnixNano())
+}
+
+// idleSince reports whether the reader has been blocked in Read with no
+// progress since `since` (or its last activity, whichever is later) for at
+// least window, as of now. A reader at EOF is never idle: it is finished.
+func (r *outputReader) idleSince(now, since time.Time, window time.Duration) bool {
+	if r.eof.Load() || !r.inRead.Load() {
+		return false
+	}
+	last := time.Unix(0, r.lastActive.Load())
+	if last.After(since) {
+		since = last
+	}
+	return now.Sub(since) >= window
+}
+
+// publish delivers an event to every current subscriber and appends it to the
+// replay buffer, trimmed to replayLimitBytes. Delivery never drops events: a
+// slow subscriber holds the output pump back, which fills the pipe and pauses
+// the process, as a terminal would. Unsubscribing releases a blocked send.
 func (p *runningProc) publish(ev *procpb.ProcessEvent) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	subs := make([]*subscriber, 0, len(p.subs))
 	for s := range p.subs {
-		select {
-		case s.ch <- ev:
-		default:
-		}
+		subs = append(subs, s)
 	}
 
 	size := eventSize(ev)
@@ -74,28 +118,47 @@ func (p *runningProc) publish(ev *procpb.ProcessEvent) {
 		p.replayBytes -= eventSize(drop)
 		p.replay = p.replay[1:]
 	}
+	p.mu.Unlock()
+
+	for _, s := range subs {
+		select {
+		case s.ch <- ev:
+		case <-s.gone:
+		}
+	}
 }
 
-func (p *runningProc) snapshotReplay() []*procpb.ProcessEvent {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	out := make([]*procpb.ProcessEvent, len(p.replay))
-	copy(out, p.replay)
-	return out
+func newSubscriber() *subscriber {
+	return &subscriber{ch: make(chan *procpb.ProcessEvent, 64), gone: make(chan struct{})}
 }
 
 func (p *runningProc) subscribe() *subscriber {
-	s := &subscriber{ch: make(chan *procpb.ProcessEvent, 64)}
+	s := newSubscriber()
 	p.mu.Lock()
 	p.subs[s] = struct{}{}
 	p.mu.Unlock()
 	return s
 }
 
+// subscribeWithReplay attaches a subscriber and snapshots the replay buffer in
+// one step, so every event is either replayed or delivered, never both.
+func (p *runningProc) subscribeWithReplay() (*subscriber, []*procpb.ProcessEvent) {
+	s := newSubscriber()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.subs[s] = struct{}{}
+	replay := make([]*procpb.ProcessEvent, len(p.replay))
+	copy(replay, p.replay)
+	return s, replay
+}
+
 func (p *runningProc) unsubscribe(s *subscriber) {
 	p.mu.Lock()
-	delete(p.subs, s)
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	if _, ok := p.subs[s]; ok {
+		delete(p.subs, s)
+		close(s.gone)
+	}
 }
 
 func eventSize(ev *procpb.ProcessEvent) int {
@@ -133,10 +196,11 @@ func (s *ProcessService) Start(ctx context.Context, req *connect.Request[procpb.
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("process config required"))
 	}
 
-	proc, err := s.spawn(cfg, req.Msg.Pty, req.Msg.Tag)
+	proc, sub, err := s.spawn(cfg, req.Msg.Pty, req.Msg.Tag)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
+	defer proc.unsubscribe(sub)
 
 	startEv := &procpb.ProcessEvent{
 		Event: &procpb.ProcessEvent_Start{
@@ -146,9 +210,6 @@ func (s *ProcessService) Start(ctx context.Context, req *connect.Request[procpb.
 	if err := stream.Send(&procpb.StartResponse{Event: startEv}); err != nil {
 		return err
 	}
-
-	sub := proc.subscribe()
-	defer proc.unsubscribe(sub)
 
 	for {
 		select {
@@ -180,8 +241,10 @@ func (s *ProcessService) Start(ctx context.Context, req *connect.Request[procpb.
 
 // spawn launches a process (PTY or pipe-based) and registers it in the
 // service's process table. The output reader goroutines publish data events
-// to subscribers and append to the replay buffer.
-func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, tagPtr *string) (*runningProc, error) {
+// to subscribers and append to the replay buffer. The returned subscriber is
+// attached before the process starts, so it sees every event, even from a
+// process that exits at once.
+func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, tagPtr *string) (*runningProc, *subscriber, error) {
 	cmd := exec.Command(cfg.Cmd, cfg.Args...)
 
 	if cfg.Cwd != nil {
@@ -208,6 +271,7 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 		subs:   make(map[*subscriber]struct{}),
 		done:   make(chan struct{}),
 	}
+	sub := proc.subscribe()
 
 	if ptyCfg != nil {
 		size := &pty.Winsize{Cols: 80, Rows: 24}
@@ -222,11 +286,11 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 		// pty.StartWithSize sets Setsid:true and gives the child a controlling tty.
 		ptmx, err := pty.StartWithSize(cmd, size)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		proc.ptyFile = ptmx
 		proc.stdin = ptmx
-		go s.readPTY(proc, ptmx)
+		proc.startReader(ptmx, outputPty)
 	} else {
 		// Place the child in its own process group so signals/cleanup can target
 		// the whole group, not just the leader.
@@ -234,22 +298,39 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		stdoutR, err := cmd.StdoutPipe()
+		// Own the output pipes instead of using cmd.StdoutPipe: exec passes an
+		// *os.File straight to the child, so cmd.Wait returns when the process
+		// exits rather than when the last writer (possibly a background child
+		// that inherited the pipe) closes it.
+		stdoutR, stdoutW, err := os.Pipe()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		stderrR, err := cmd.StderrPipe()
+		stderrR, stderrW, err := os.Pipe()
 		if err != nil {
-			return nil, err
+			stdoutR.Close()
+			stdoutW.Close()
+			return nil, nil, err
 		}
-		if err := cmd.Start(); err != nil {
-			return nil, err
+		cmd.Stdout = stdoutW
+		cmd.Stderr = stderrW
+		err = cmd.Start()
+		// The child holds its own copies; the parent must drop the write ends
+		// or the readers would never see EOF.
+		stdoutW.Close()
+		stderrW.Close()
+		if err != nil {
+			stdoutR.Close()
+			stderrR.Close()
+			return nil, nil, err
 		}
 		proc.stdin = stdin
-		go s.readStream(proc, stdoutR, true)
-		go s.readStream(proc, stderrR, false)
+		proc.stdoutR = stdoutR
+		proc.stderrR = stderrR
+		proc.startReader(stdoutR, outputStdout)
+		proc.startReader(stderrR, outputStderr)
 	}
 
 	s.mu.Lock()
@@ -257,63 +338,113 @@ func (s *ProcessService) spawn(cfg *procpb.ProcessConfig, ptyCfg *procpb.PTY, ta
 	s.mu.Unlock()
 
 	go s.reap(proc)
-	return proc, nil
+	return proc, sub, nil
 }
 
-func (s *ProcessService) readStream(proc *runningProc, r io.ReadCloser, isStdout bool) {
+type outputKind int
+
+const (
+	outputStdout outputKind = iota
+	outputStderr
+	outputPty
+)
+
+// startReader launches a pump that copies f into data events until Read
+// fails, and registers it so reap can track its progress.
+func (p *runningProc) startReader(f io.Reader, kind outputKind) {
+	r := newOutputReader()
+	p.readers = append(p.readers, r)
+	p.readersWG.Add(1)
+	go p.readOutput(r, f, kind)
+}
+
+func (p *runningProc) readOutput(r *outputReader, f io.Reader, kind outputKind) {
+	defer p.readersWG.Done()
 	buf := make([]byte, readChunkSize)
 	for {
-		n, err := r.Read(buf)
+		r.inRead.Store(true)
+		n, err := f.Read(buf)
+		r.inRead.Store(false)
 		if n > 0 {
+			r.touch()
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
-			var data *procpb.ProcessEvent_DataEvent
-			if isStdout {
-				data = &procpb.ProcessEvent_DataEvent{
-					Output: &procpb.ProcessEvent_DataEvent_Stdout{Stdout: chunk},
-				}
-			} else {
-				data = &procpb.ProcessEvent_DataEvent{
-					Output: &procpb.ProcessEvent_DataEvent_Stderr{Stderr: chunk},
-				}
+			data := &procpb.ProcessEvent_DataEvent{}
+			switch kind {
+			case outputStdout:
+				data.Output = &procpb.ProcessEvent_DataEvent_Stdout{Stdout: chunk}
+			case outputStderr:
+				data.Output = &procpb.ProcessEvent_DataEvent_Stderr{Stderr: chunk}
+			case outputPty:
+				data.Output = &procpb.ProcessEvent_DataEvent_Pty{Pty: chunk}
 			}
-			proc.publish(&procpb.ProcessEvent{
+			p.publish(&procpb.ProcessEvent{
 				Event: &procpb.ProcessEvent_Data{Data: data},
 			})
+			// publish may have blocked on a slow subscriber for any length of
+			// time; the reader is only idle once it has sat in Read after this.
+			r.touch()
 		}
 		if err != nil {
+			r.eof.Store(true)
 			return
 		}
 	}
 }
 
-func (s *ProcessService) readPTY(proc *runningProc, ptmx *os.File) {
-	buf := make([]byte, readChunkSize)
-	for {
-		n, err := ptmx.Read(buf)
-		if n > 0 {
-			chunk := make([]byte, n)
-			copy(chunk, buf[:n])
-			proc.publish(&procpb.ProcessEvent{
-				Event: &procpb.ProcessEvent_Data{
-					Data: &procpb.ProcessEvent_DataEvent{
-						Output: &procpb.ProcessEvent_DataEvent_Pty{Pty: chunk},
-					},
-				},
-			})
-		}
-		if err != nil {
-			return
+// readersIdle reports whether every reader has either exited or has been
+// blocked in Read with nothing to deliver for window, counted from the later
+// of the process exit and the reader's last progress.
+func (p *runningProc) readersIdle(now, exitedAt time.Time, window time.Duration) bool {
+	for _, r := range p.readers {
+		if !r.eof.Load() && !r.idleSince(now, exitedAt, window) {
+			return false
 		}
 	}
+	return true
 }
 
 func (s *ProcessService) reap(proc *runningProc) {
+	// Returns when the process itself exits. Nothing here waits on the output
+	// pipes, so a background child that inherited them cannot hold End back.
 	err := proc.cmd.Wait()
+	exitedAt := time.Now()
 
-	if proc.ptyFile != nil {
-		proc.ptyFile.Close()
+	readersDone := make(chan struct{})
+	go func() {
+		proc.readersWG.Wait()
+		close(readersDone)
+	}()
+
+	// Output written before exit may still be in the pipe, and a slow
+	// subscriber can hold a reader in publish for as long as it likes, so the
+	// drain is bounded by progress rather than by a fixed delay after exit:
+	// keep waiting while any reader is reading or publishing. Only once every
+	// reader that has not hit EOF has sat in Read for 200 ms with nothing to
+	// deliver (a lingering child holds the write end open but is not using it)
+	// is the pipe given up on, so a background `sleep 30 &` cannot delay End.
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+drain:
+	for {
+		select {
+		case <-readersDone:
+			break drain
+		case now := <-ticker.C:
+			if proc.readersIdle(now, exitedAt, 200*time.Millisecond) {
+				break drain
+			}
+		}
 	}
+
+	// Close the parent's read ends so blocked readers return, then wait for
+	// them so End is published after every data event.
+	for _, f := range []*os.File{proc.stdoutR, proc.stderrR, proc.ptyFile} {
+		if f != nil {
+			f.Close()
+		}
+	}
+	<-readersDone
 
 	exitCode := int32(0)
 	exited := true
@@ -477,11 +608,10 @@ func (s *ProcessService) Connect(ctx context.Context, req *connect.Request[procp
 		return err
 	}
 
-	sub := proc.subscribe()
+	sub, replay := proc.subscribeWithReplay()
 	defer proc.unsubscribe(sub)
 
-	// Replay buffered events (snapshot taken after subscribing to avoid gaps).
-	for _, ev := range proc.snapshotReplay() {
+	for _, ev := range replay {
 		if err := stream.Send(&procpb.ConnectResponse{Event: ev}); err != nil {
 			return err
 		}

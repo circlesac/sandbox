@@ -13,25 +13,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = "circlesac/sandbox";
 
 const PLATFORMS = {
-  "darwin-x64": { artifact: "sandbox-darwin-amd64", ext: ".tar.gz" },
-  "darwin-arm64": { artifact: "sandbox-darwin-arm64", ext: ".tar.gz" },
-  "linux-x64": { artifact: "sandbox-linux-amd64", ext: ".tar.gz" },
-  "linux-arm64": { artifact: "sandbox-linux-arm64", ext: ".tar.gz" },
+	"darwin-x64": { artifact: "sandbox-darwin-amd64", ext: ".tar.gz" },
+	"darwin-arm64": { artifact: "sandbox-darwin-arm64", ext: ".tar.gz" },
+	"linux-x64": { artifact: "sandbox-linux-amd64", ext: ".tar.gz" },
+	"linux-arm64": { artifact: "sandbox-linux-arm64", ext: ".tar.gz" },
 };
 
 function download(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
-      if (res.statusCode === 302 || res.statusCode === 301) {
-        return download(res.headers.location).then(resolve).catch(reject);
-      }
-      if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
-      const chunks = [];
-      res.on("data", (c) => chunks.push(c));
-      res.on("end", () => resolve(Buffer.concat(chunks)));
-      res.on("error", reject);
-    });
-  });
+	return new Promise((resolve, reject) => {
+		https.get(url, (res) => {
+			if (res.statusCode === 302 || res.statusCode === 301) {
+				return download(res.headers.location).then(resolve).catch(reject);
+			}
+			if (res.statusCode !== 200)
+				return reject(new Error(`HTTP ${res.statusCode}`));
+			const chunks = [];
+			res.on("data", (c) => chunks.push(c));
+			res.on("end", () => resolve(Buffer.concat(chunks)));
+			res.on("error", reject);
+		});
+	});
 }
 
 if (process.env.CI) process.exit(0);
@@ -41,8 +42,8 @@ if (!version) process.exit(0);
 const platform = `${process.platform}-${process.arch}`;
 const info = PLATFORMS[platform];
 if (!info) {
-  console.error(`Unsupported platform: ${platform}`);
-  process.exit(1);
+	console.error(`Unsupported platform: ${platform}`);
+	process.exit(1);
 }
 
 const { artifact, ext } = info;

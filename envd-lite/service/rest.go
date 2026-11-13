@@ -49,8 +49,9 @@ func HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// HandleInit sets environment variables and default user.
-func HandleInit(state *EnvState) http.HandlerFunc {
+// HandleInit sets environment variables, the default user, and the access
+// token. Once a token is set, only a request that knows it may change it.
+func HandleInit(state *EnvState, token *AccessToken) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -59,10 +60,20 @@ func HandleInit(state *EnvState) http.HandlerFunc {
 		var req struct {
 			EnvVars     map[string]string `json:"envVars"`
 			DefaultUser string            `json:"defaultUser"`
+			AccessToken string            `json:"accessToken"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if current := token.Get(); current != "" &&
+			!tokensEqual(req.AccessToken, current) &&
+			!tokensEqual(r.Header.Get("X-Access-Token"), current) {
+			http.Error(w, `{"code":401,"message":"missing or invalid access token"}`, http.StatusUnauthorized)
+			return
+		}
+		if req.AccessToken != "" {
+			token.Set(req.AccessToken)
 		}
 		state.Set(req.EnvVars)
 		if req.DefaultUser != "" {
@@ -165,9 +176,19 @@ func HandleFiles(w http.ResponseWriter, r *http.Request) {
 
 			// Use path as-is for single file upload.
 			// Only append filename if path looks like a directory (ends with /).
+			// The part filename is client-controlled and the directory is what
+			// the signed URL authorises, so only its base name is used, and
+			// names that resolve to the directory itself or its parent are
+			// rejected rather than joined.
 			filePath := path
-			if strings.HasSuffix(path, "/") && part.FileName() != "" {
-				filePath = filepath.Join(path, part.FileName())
+			if strings.HasSuffix(path, "/") {
+				name := filepath.Base(part.FileName())
+				if name == "" || name == "." || name == ".." || strings.ContainsRune(name, filepath.Separator) {
+					part.Close()
+					http.Error(w, `{"error":"invalid filename"}`, http.StatusBadRequest)
+					return
+				}
+				filePath = filepath.Join(path, name)
 			}
 
 			if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {

@@ -7,15 +7,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/fsnotify/fsnotify"
+	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	fspb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/filesystem"
-	fsrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-infra/gen/filesystem/filesystemconnect"
+	fspb "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/filesystem"
+	fsrpc "github.com/circlesac/sandbox/envd-lite/upstream/e2b-dev-runtime/gen/filesystem/filesystemconnect"
 )
 
 // watcherBufferCap bounds the events held per polled watcher to keep memory
@@ -23,9 +25,10 @@ import (
 const watcherBufferCap = 4096
 
 type watcher struct {
-	w         *fsnotify.Watcher
-	recursive bool
-	root      string
+	w            *fsnotify.Watcher
+	recursive    bool
+	includeEntry bool
+	root         string
 
 	mu     sync.Mutex
 	buffer []*fspb.FilesystemEvent
@@ -107,11 +110,14 @@ func (s *FilesystemService) Move(ctx context.Context, req *connect.Request[fspb.
 	}), nil
 }
 
+// WatchDir streams events. allow_network_mounts needs no handling: fsnotify
+// watches any mounted path, with whatever reliability the filesystem gives.
 func (s *FilesystemService) WatchDir(ctx context.Context, req *connect.Request[fspb.WatchDirRequest], stream *connect.ServerStream[fspb.WatchDirResponse]) error {
 	w, err := newFSWatcher(req.Msg.Path, req.Msg.Recursive)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
+	w.includeEntry = req.Msg.IncludeEntry
 	defer w.close()
 
 	if err := stream.Send(&fspb.WatchDirResponse{
@@ -135,6 +141,7 @@ func (s *FilesystemService) WatchDir(ctx context.Context, req *connect.Request[f
 			if fe == nil {
 				continue
 			}
+			fe = withEntry(fe, w.includeEntry)
 			if w.recursive && ev.Op&fsnotify.Create != 0 {
 				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
 					w.w.Add(ev.Name)
@@ -165,6 +172,7 @@ func (s *FilesystemService) CreateWatcher(ctx context.Context, req *connect.Requ
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	w.includeEntry = req.Msg.IncludeEntry
 
 	id := newWatcherID()
 	s.mu.Lock()
@@ -219,6 +227,7 @@ func (s *FilesystemService) drainPolled(w *watcher) {
 			if fe == nil {
 				continue
 			}
+			fe = withEntry(fe, w.includeEntry)
 			if w.recursive && ev.Op&fsnotify.Create != 0 {
 				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
 					w.w.Add(ev.Name)
@@ -286,15 +295,20 @@ func newWatcherID() string {
 	return hex.EncodeToString(buf[:])
 }
 
+// toEntryInfo describes an entry from its Lstat info the way upstream envd
+// does: for a symlink, IsSymlink is set and Type and Mode describe the target
+// (unspecified when the link dangles); Permissions keeps the type letter.
 func toEntryInfo(path string, info os.FileInfo) *fspb.EntryInfo {
 	if info == nil {
 		return &fspb.EntryInfo{Path: path, Name: filepath.Base(path)}
 	}
-	ft := fspb.FileType_FILE_TYPE_FILE
-	if info.IsDir() {
-		ft = fspb.FileType_FILE_TYPE_DIRECTORY
-	} else if info.Mode()&os.ModeSymlink != 0 {
-		ft = fspb.FileType_FILE_TYPE_SYMLINK
+	isSymlink := info.Mode()&os.ModeSymlink != 0
+	ft, mode := entryType(info.Mode()), info.Mode().Perm()
+	if isSymlink {
+		ft, mode = fspb.FileType_FILE_TYPE_UNSPECIFIED, 0
+		if target, err := os.Stat(path); err == nil {
+			ft, mode = entryType(target.Mode()), target.Mode().Perm()
+		}
 	}
 
 	entry := &fspb.EntryInfo{
@@ -302,16 +316,79 @@ func toEntryInfo(path string, info os.FileInfo) *fspb.EntryInfo {
 		Type:         ft,
 		Path:         path,
 		Size:         info.Size(),
-		Mode:         uint32(info.Mode().Perm()),
-		Permissions:  info.Mode().Perm().String(),
+		Mode:         uint32(mode),
+		Permissions:  info.Mode().String(),
 		ModifiedTime: timestamppb.New(info.ModTime()),
+		IsSymlink:    isSymlink,
+		Metadata:     readMetadata(path),
 	}
 
-	if ft == fspb.FileType_FILE_TYPE_SYMLINK {
+	if isSymlink {
 		if target, err := os.Readlink(path); err == nil {
 			entry.SymlinkTarget = &target
 		}
 	}
 
 	return entry
+}
+
+func entryType(mode os.FileMode) fspb.FileType {
+	switch {
+	case mode.IsDir():
+		return fspb.FileType_FILE_TYPE_DIRECTORY
+	case mode.IsRegular():
+		return fspb.FileType_FILE_TYPE_FILE
+	case mode&os.ModeSymlink != 0:
+		return fspb.FileType_FILE_TYPE_SYMLINK
+	default:
+		return fspb.FileType_FILE_TYPE_UNSPECIFIED
+	}
+}
+
+// metadataPrefix is the xattr namespace upstream envd keeps file metadata in.
+const metadataPrefix = "user.e2b."
+
+// readMetadata returns the entry's user.e2b.* extended attributes, prefix stripped.
+func readMetadata(path string) map[string]string {
+	size, err := unix.Llistxattr(path, nil)
+	if err != nil || size <= 0 {
+		return nil
+	}
+	buf := make([]byte, size)
+	size, err = unix.Llistxattr(path, buf)
+	if err != nil {
+		return nil
+	}
+	var metadata map[string]string
+	for _, name := range strings.Split(string(buf[:size]), "\x00") {
+		if !strings.HasPrefix(name, metadataPrefix) {
+			continue
+		}
+		value := make([]byte, 4096)
+		n, err := unix.Lgetxattr(path, name, value)
+		if err != nil {
+			continue
+		}
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		metadata[strings.TrimPrefix(name, metadataPrefix)] = string(value[:n])
+	}
+	return metadata
+}
+
+// withEntry attaches the affected entry when the caller asked for it. Like
+// upstream envd, only create, write, and chmod events carry one: after a
+// remove or rename the path no longer holds the original entry.
+func withEntry(fe *fspb.FilesystemEvent, includeEntry bool) *fspb.FilesystemEvent {
+	if !includeEntry {
+		return fe
+	}
+	switch fe.Type {
+	case fspb.EventType_EVENT_TYPE_CREATE, fspb.EventType_EVENT_TYPE_WRITE, fspb.EventType_EVENT_TYPE_CHMOD:
+		if info, err := os.Lstat(fe.Name); err == nil {
+			fe.Entry = toEntryInfo(fe.Name, info)
+		}
+	}
+	return fe
 }
