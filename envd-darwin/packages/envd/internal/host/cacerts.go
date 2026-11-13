@@ -49,7 +49,7 @@ type CACertInstaller struct {
 }
 
 func NewCACertInstaller(logger *zerolog.Logger) *CACertInstaller {
-	return &CACertInstaller{logger: logger, mu: semaphore.NewWeighted(1), statePath: "/run/e2b/ca/state.json", wake: make(chan struct{}, 1)}
+	return &CACertInstaller{logger: logger, mu: semaphore.NewWeighted(1), statePath: filepath.Join(E2BRunDir, "ca", "state.json"), wake: make(chan struct{}, 1)}
 }
 
 func (c *CACertInstaller) Install(ctx context.Context, bundlePEM string) error {

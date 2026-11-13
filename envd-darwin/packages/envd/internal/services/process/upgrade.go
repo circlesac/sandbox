@@ -26,7 +26,7 @@ import (
 // an outgoing and incoming envd built at different versions stay compatible.
 // /run is tmpfs, so it never touches the rootfs diff. A var (not a const) so
 // tests can point it at a temp file.
-var HandoverPath = "/run/e2b/envd-handover.pb"
+var HandoverPath = defaultHandoverPath
 
 // handoverSchema is the maximum HandoverState schema this envd will read: a reader refuses a
 // blob whose schema exceeds it (design §6.4 — decode every schema <= N, abort on schema > N)

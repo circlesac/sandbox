@@ -62,7 +62,7 @@ One-time setup after cloning the base image:
 tart run sandbox-base --no-graphics &
 
 # Download, verify, install, and bootstrap the pinned Darwin envd release.
-./envd-darwin/install-release.sh <release-tag> sandbox-base
+TART_IP_RESOLVER=arp ./envd-darwin/install-release.sh <release-tag> sandbox-base
 
 # Stop VM (saves the changes to disk)
 tart stop sandbox-base
