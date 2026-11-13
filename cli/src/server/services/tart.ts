@@ -148,8 +148,9 @@ async function tartList(): Promise<TartVm[]> {
 }
 
 function tartIp(vmName: string, waitSec = 30): Promise<string> {
-	const args = ["ip", "--wait", String(waitSec), vmName];
+	const args = ["ip", "--wait", String(waitSec)];
 	if (config.tartIpResolver) args.push("--resolver", config.tartIpResolver);
+	args.push(vmName);
 	return tartExec(args, (waitSec + 10) * 1000);
 }
 
