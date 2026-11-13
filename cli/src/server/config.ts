@@ -20,5 +20,7 @@ export const config = {
 	domain: process.env.DOMAIN ?? "sandbox.circles.dev",
 	envdVersion: "0.5.3",
 	tartEnvdVersion: process.env.TART_ENVD_VERSION ?? "0.10.2",
+	tartIpResolver: process.env.TART_IP_RESOLVER,
+	tartNetBridged: process.env.TART_NET_BRIDGED,
 	defaultUser: "user",
 };

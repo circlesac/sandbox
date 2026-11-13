@@ -148,10 +148,17 @@ async function tartList(): Promise<TartVm[]> {
 }
 
 function tartIp(vmName: string, waitSec = 30): Promise<string> {
-	return tartExec(
-		["ip", "--wait", String(waitSec), vmName],
-		(waitSec + 10) * 1000,
-	);
+	const args = ["ip", "--wait", String(waitSec), vmName];
+	if (config.tartIpResolver) args.push("--resolver", config.tartIpResolver);
+	return tartExec(args, (waitSec + 10) * 1000);
+}
+
+function tartRunArgs(vmName: string): string[] {
+	const args = ["tart", "run", vmName, "--no-graphics", "--suspendable"];
+	if (config.tartNetBridged) {
+		args.push("--net-bridged", config.tartNetBridged);
+	}
+	return args;
 }
 
 /** Bind the actual proxy once, on loopback, without releasing its allocated port. */
@@ -296,10 +303,9 @@ export class TartBackend implements ContainerBackend {
 		const isSuspended = await this.vmIsSuspended(vmName);
 
 		// Start the VM in the background (resume if suspended, cold boot otherwise)
-		const run = Bun.spawn(
-			["tart", "run", vmName, "--no-graphics", "--suspendable"],
-			{ stdio: ["ignore", "ignore", "pipe"] },
-		);
+		const run = Bun.spawn(tartRunArgs(vmName), {
+			stdio: ["ignore", "ignore", "pipe"],
+		});
 		const runError = new Response(run.stderr).text();
 
 		if (!isSuspended) {
@@ -506,10 +512,9 @@ export class TartBackend implements ContainerBackend {
 		let runError = Promise.resolve("");
 		let restarts = 0;
 		const startRun = () => {
-			run = Bun.spawn(
-				["tart", "run", instance.vmName, "--no-graphics", "--suspendable"],
-				{ stdio: ["ignore", "ignore", "pipe"] },
-			);
+			run = Bun.spawn(tartRunArgs(instance.vmName), {
+				stdio: ["ignore", "ignore", "pipe"],
+			});
 			runError = new Response(run.stderr as ReadableStream).text();
 		};
 		if (!wasRunning) startRun();
