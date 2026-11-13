@@ -317,7 +317,11 @@ export class TartBackend implements ContainerBackend {
 		}
 
 		let vmIp: string | undefined;
-		const maxRetries = isSuspended ? 2 : 6;
+		const maxRetries = isSuspended
+			? 2
+			: config.tartIpResolver === "arp"
+				? 12
+				: 6;
 		const ipWaitSec = isSuspended ? 3 : 30;
 		for (let i = 0; i < maxRetries; i++) {
 			try {
@@ -325,6 +329,9 @@ export class TartBackend implements ContainerBackend {
 				if (vmIp) break;
 			} catch {
 				// VM not ready yet, retry
+			}
+			if (!vmIp && config.tartIpResolver === "arp" && i + 1 < maxRetries) {
+				await new Promise((resolve) => setTimeout(resolve, 2_000));
 			}
 		}
 
