@@ -272,7 +272,7 @@ describe("handleProxyRequest", () => {
 			lifecycle: lifecycle({ autoPause: true, autoResume: true }),
 		});
 		vi.mocked(deps.resumeForTraffic).mockRejectedValueOnce(
-			new Error("envd-lite did not become healthy after resume"),
+			new Error("envd did not become healthy after resume"),
 		);
 		const res = await request({ sandboxId: "sbx-a", port: 3000 }, "/");
 		expect(res.status).toBe(502);

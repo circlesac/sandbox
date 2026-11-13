@@ -611,7 +611,7 @@ describe("TartBackend", () => {
 		});
 	});
 
-	describe("resuming a VM whose envd-lite never answers", () => {
+	describe("resuming a VM whose envd never answers", () => {
 		const addPaused = (id: string) =>
 			(backend as unknown as { instances: Map<string, unknown> }).instances.set(
 				id,

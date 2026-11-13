@@ -68,17 +68,21 @@ sandbox serve
 brew install cirruslabs/cli/tart
 tart clone ghcr.io/cirruslabs/macos-sequoia-base:latest sandbox-base
 
-# Build and install envd-lite into base image (one-time)
-cd envd-lite
-go generate ./...
-go build -o envd-lite .
-# See CONTRIBUTING.md for base image setup with envd-lite pre-installed
+# Build and install the Darwin envd into the base image (one-time)
+cd envd-darwin
+GOARCH=arm64 ./build.sh
+# See CONTRIBUTING.md for base image setup with the Darwin envd pre-installed.
 
 # Start with macOS support alongside Docker
 SANDBOX_MACOS_BACKEND=tart sandbox serve
 ```
 
-envd-lite is pre-installed in the base image with a LaunchAgent, so each sandbox only needs to clone the VM and boot it. VM creation takes ~30-60s depending on host CPU.
+The Darwin envd is pre-installed in the base image with a LaunchAgent, so each sandbox only needs to clone the VM and boot it. VM creation takes ~30-60s depending on host CPU.
+
+The release workflow publishes pinned `envd-darwin-arm64` and
+`envd-darwin-amd64` archives with SHA-256 files to the same GitHub Release as
+the CLI. Tart base images should install one of these versioned assets instead
+of downloading an unpinned build.
 
 ### Public endpoint for a local control plane
 
@@ -162,7 +166,7 @@ bun run smoke:pty
 | Feature | Docker | Tart (macOS) | Shuru |
 | --- | --- | --- | --- |
 | Create, commands, PTY, files | Yes | Yes | Yes |
-| envd access token (every sandbox is secure; `secure: false` is ignored, as in E2B) | Enforced by envd | Enforced by envd-lite and the control plane | Enforced by the control plane |
+| envd access token (every sandbox is secure; `secure: false` is ignored, as in E2B) | Enforced by envd | Enforced by Darwin envd and the control plane | Enforced by the control plane |
 | Timeout kills the sandbox (E2B default) | Yes | Yes | Yes |
 | `onTimeout: "pause"` / `Sandbox.pause()`, keeping memory | Yes (container frozen) | Yes (VM suspended); where the host cannot save VM state, the VM stops and keeps only its disk | 400 |
 | Filesystem-only pause (`autoPauseMemory: false`, `memory: false`) | Yes (container stopped) | 400 | 400 |
@@ -186,7 +190,7 @@ Known differences that are not errors:
 - WebSocket upgrades to sandbox ports are not proxied.
 - The `Idempotency-Key` header on create is not honored; a retried create can start a second sandbox.
 - Sandboxes created before lifecycles were recorded keep their old behavior: pause by stopping on timeout.
-- Docker reports the envd version in each image (0.10.2 in the base image), so the SDK uses what that envd supports; Tart reports envd-lite's 0.5.3.
+- Docker reports the envd version in each image, so the SDK uses what that envd supports; Tart reports the Darwin envd version installed in its base VM.
 
 ## Architecture
 

@@ -67,3 +67,22 @@ jobs:
           if [ -n "$unformatted" ]; then echo "gofmt needed: $unformatted"; exit 1; fi
           go vet ./...
           go test -race ./...
+
+  envd-darwin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: envd-darwin
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: envd-darwin/packages/envd/go.mod
+          cache-dependency-path: envd-darwin/packages/envd/go.sum
+
+      - name: Cross-compile and compile-test Darwin envd
+        run: |
+          ./test.sh
+          GOARCH=arm64 ./build.sh
+          GOARCH=amd64 ./build.sh

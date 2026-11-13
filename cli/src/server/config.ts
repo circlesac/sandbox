@@ -19,5 +19,6 @@ export const config = {
 	envdHealthIntervalMs: 500,
 	domain: process.env.DOMAIN ?? "sandbox.circles.dev",
 	envdVersion: "0.5.3",
+	tartEnvdVersion: process.env.TART_ENVD_VERSION ?? "0.10.2",
 	defaultUser: "user",
 };

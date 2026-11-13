@@ -54,11 +54,11 @@ shuru checkpoint create sandbox-base --allow-net --mount "$PWD:/mnt/ctx" -- sh -
 
 **Key differences from Shuru:**
 - Runs macOS guests, not Alpine Linux
-- Uses `envd-lite` (Go) — a lightweight reimplementation of envd for macOS (original envd is Linux-only)
+- Uses the upstream E2B `envd` Darwin build, pinned and published with this repository's GitHub Release
 - Supports suspend/resume — VMs persist across sandbox stop/start
 - VM creation takes ~30-60s (clone + boot + SSH deploy)
 
-**Sandbox lifecycle:** `tart clone` → `tart run` → SSH deploy envd-lite → TCP proxy to envd-lite port.
+**Sandbox lifecycle:** `tart clone` → `tart run` → LaunchAgent starts the pre-installed envd → TCP proxy to envd port.
 
 **Default credentials:** `admin` / `admin` (standard Tart base image convention).
 

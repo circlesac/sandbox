@@ -7,7 +7,7 @@ cd cli
 bun install
 bun run dev serve        # run server in dev mode
 bun run test             # format check, lint, type check, unit + integration tests
-bun run test:local       # format, lint, types, unit tests, every local provider, SDK matrix, envd-lite
+bun run test:local       # format, lint, types, unit tests, every local provider, SDK matrix, envd-lite fallback
 bun run test:unit        # unit tests only
 bun run test:docker      # E2B smoke suite on the Docker backend
 bun run test:tart        # E2B smoke suite on Tart macOS VMs
@@ -19,7 +19,7 @@ bun run test:coverage    # all tests with a coverage report for src/
 bun run format           # apply formatting
 ```
 
-`test:docker`, `test:tart`, and `test:shuru` fail with the missing prerequisite when the provider is not set up, instead of skipping. `test:local` runs what this machine can, including envd-lite when Go and protoc are installed, and lists what it could not run and why.
+`test:docker`, `test:tart`, and `test:shuru` fail with the missing prerequisite when the provider is not set up, instead of skipping. `test:local` runs what this machine can, including the envd-lite compatibility fallback when Go and protoc are installed, and lists what it could not run and why.
 
 The Tart memory-resume test explicitly reports a skip if macOS cannot save VM memory or rejects restoring it with `VZErrorDomain: permission denied`. Before skipping a rejected restore, it verifies that the API reports the failure and the VM remains suspended. Other resume errors fail the suite; a skip does not establish working memory restore on that host.
 
@@ -39,46 +39,30 @@ Pull requests run the same `test` and `test:sdk-matrix` scripts in `.github/work
 | --- | --- | --- | --- |
 | `@biomejs/biome` | 2.6.3 | 2026-10-24 | One natively compiled tool for formatting and linting, configured from `biome init` plus one override: `noExplicitAny` is raised from warning to error. |
 
-### envd-lite (Tart backend)
+### Darwin envd (Tart backend)
 
 ```bash
-cd envd-lite
-go generate ./...     # regenerate protobuf code from upstream .proto files
-go build -o envd-lite .
+cd envd-darwin
+GOARCH=arm64 ./test.sh
+GOARCH=arm64 ./build.sh
 ```
+
+The release workflow publishes the resulting Darwin binaries as versioned
+`envd-darwin-arm64` and `envd-darwin-amd64` GitHub Release assets with SHA-256
+files. The Tart base image should install a pinned release asset when preparing
+the VM.
 
 ### Tart base image setup
 
-envd-lite must be pre-installed in the `sandbox-base` VM for the Tart backend to work.
+The Darwin envd must be pre-installed in the `sandbox-base` VM for the Tart backend to work.
 One-time setup after cloning the base image:
 
 ```bash
 # Boot the base VM
 tart run sandbox-base --no-graphics &
 
-# Wait for IP and install envd-lite
-IP=$(tart ip --wait 30 sandbox-base)
-SSH_AUTH_SOCK="" sshpass -p admin ssh -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password \
-  admin@$IP 'sudo mkdir -p /usr/local/bin'
-cat envd-lite/envd-lite | SSH_AUTH_SOCK="" sshpass -p admin ssh \
-  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-  -o PreferredAuthentications=password admin@$IP \
-  'cat > /tmp/envd-lite && sudo mv /tmp/envd-lite /usr/local/bin/envd-lite && sudo chmod +x /usr/local/bin/envd-lite'
-
-# Create LaunchAgent for auto-start on boot
-SSH_AUTH_SOCK="" sshpass -p admin ssh -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password \
-  admin@$IP 'mkdir -p ~/Library/LaunchAgents && printf "%s\n" \
-  "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" \
-  "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" \
-  "<plist version=\"1.0\"><dict>" \
-  "<key>Label</key><string>com.circlesac.envd-lite</string>" \
-  "<key>ProgramArguments</key><array><string>/usr/local/bin/envd-lite</string><string>-port</string><string>49983</string></array>" \
-  "<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>" \
-  "<key>StandardOutPath</key><string>/tmp/envd-lite.log</string>" \
-  "<key>StandardErrorPath</key><string>/tmp/envd-lite.log</string>" \
-  "</dict></plist>" > ~/Library/LaunchAgents/com.circlesac.envd-lite.plist'
+# Download, verify, install, and bootstrap the pinned Darwin envd release.
+./envd-darwin/install-release.sh <release-tag> sandbox-base
 
 # Stop VM (saves the changes to disk)
 tart stop sandbox-base
@@ -94,9 +78,8 @@ cli/                  # Control plane server + CLI
     shuru.ts          # Shuru backend
     tart.ts           # Tart backend
   test/               # Unit + integration tests
-envd-lite/            # Minimal envd for macOS VMs (Go, connectrpc)
-  service/            # Our code: process, filesystem, REST handlers
-  upstream/           # Code from e2b-dev/runtime (proto files + generate.sh)
+envd-darwin/           # Pinned upstream envd source and Darwin release tooling
+envd-lite/             # Compatibility fallback for older Tart base images
 docker/sandbox/       # Docker base image
 docs/                 # Backend comparison docs
 ```

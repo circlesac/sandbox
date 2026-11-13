@@ -184,9 +184,9 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 		});
 	});
 
-	// ── envd-lite, ports, lifecycle ────────────────────────────
+	// ── envd, ports, lifecycle ────────────────────────────
 
-	describe("envd-lite, ports, and lifecycle", () => {
+	describe("envd, ports, and lifecycle", () => {
 		const serveOk = (port: number) =>
 			`while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\nConnection: close\\r\\n\\r\\nok' | nc -l ${port}; done`;
 		const viaHeaders = (
@@ -244,9 +244,9 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 				expect(address).toMatch(/^127\.0\.0\.1:\d+$/);
 		});
 
-		it("reports envd-lite's API version", async () => {
+		it("reports envd's API version", async () => {
 			const info = await Sandbox.getInfo(sandbox.sandboxId, opts);
-			expect(info.envdVersion).toBe("0.5.3");
+			expect(info.envdVersion).toBe("0.10.2");
 		});
 
 		it("rejects envd requests without the access token", async () => {
