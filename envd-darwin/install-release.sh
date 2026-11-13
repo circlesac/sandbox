@@ -44,6 +44,7 @@ IP_RESOLVER=${TART_IP_RESOLVER:-dhcp}
 ip=$(tart ip --wait 30 --resolver "$IP_RESOLVER" "$VM_NAME")
 ssh_to_vm() {
 	sshpass -p "$PASSWORD" ssh \
+		-o IdentitiesOnly=yes \
 		-o StrictHostKeyChecking=no \
 		-o UserKnownHostsFile=/dev/null \
 		-o PreferredAuthentications=password \
