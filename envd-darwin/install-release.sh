@@ -70,7 +70,6 @@ ssh_to_vm "cat > /tmp/com.circlesac.envd.plist <<'PLIST'
 <key>StandardOutPath</key><string>/tmp/envd.log</string>
 <key>StandardErrorPath</key><string>/tmp/envd.log</string>
 </dict></plist>
-</plist>
 PLIST
 mkdir -p ~/Library/LaunchAgents
 mv /tmp/com.circlesac.envd.plist ~/Library/LaunchAgents/com.circlesac.envd.plist
