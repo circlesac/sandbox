@@ -171,8 +171,9 @@ describe.skipIf(!opts)("E2B lifecycle and ports", { timeout: 120_000 }, () => {
 	});
 
 	it("kills a sandbox on timeout by default and never brings it back", async () => {
-		const sandbox = await Sandbox.create("base", { ...opts, timeoutMs: 3_000 });
+		const sandbox = await Sandbox.create("base", opts);
 		created.push(sandbox.sandboxId);
+		await sandbox.setTimeout(0);
 
 		await waitFor(
 			async () => {
@@ -181,7 +182,7 @@ describe.skipIf(!opts)("E2B lifecycle and ports", { timeout: 120_000 }, () => {
 					? undefined
 					: true;
 			},
-			15_000,
+			10_000,
 			"the sandbox to be killed",
 		);
 		const traffic = await viaHeaders(sandbox.sandboxId, 49983);
@@ -194,18 +195,18 @@ describe.skipIf(!opts)("E2B lifecycle and ports", { timeout: 120_000 }, () => {
 	it("pauses on timeout keeping running processes, and resumes on traffic", async () => {
 		const sandbox = await Sandbox.create("base", {
 			...opts,
-			timeoutMs: 4_000,
 			lifecycle: { onTimeout: "pause", autoResume: true },
 		});
 		created.push(sandbox.sandboxId);
 		await startHttpServer(sandbox);
+		await sandbox.setTimeout(0);
 
 		await waitFor(
 			async () => {
 				const info = await Sandbox.getInfo(sandbox.sandboxId, opts);
 				return info.state === "paused" ? true : undefined;
 			},
-			15_000,
+			10_000,
 			"the sandbox to pause",
 		);
 
@@ -220,17 +221,17 @@ describe.skipIf(!opts)("E2B lifecycle and ports", { timeout: 120_000 }, () => {
 	it("stays paused on traffic when autoResume is off", async () => {
 		const sandbox = await Sandbox.create("base", {
 			...opts,
-			timeoutMs: 3_000,
 			lifecycle: { onTimeout: "pause" },
 		});
 		created.push(sandbox.sandboxId);
+		await sandbox.setTimeout(0);
 
 		await waitFor(
 			async () => {
 				const info = await Sandbox.getInfo(sandbox.sandboxId, opts);
 				return info.state === "paused" ? true : undefined;
 			},
-			15_000,
+			10_000,
 			"the sandbox to pause",
 		);
 		const res = await viaHeaders(sandbox.sandboxId, 49983);

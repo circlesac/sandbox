@@ -64,7 +64,7 @@ describe("writeConfig", () => {
 		});
 		expect(writeFileSyncMock).toHaveBeenCalledWith(
 			CONFIG_PATH,
-			JSON.stringify(config, null, 2) + "\n",
+			`${JSON.stringify(config, null, 2)}\n`,
 		);
 	});
 });

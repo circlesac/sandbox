@@ -10,6 +10,7 @@ const opts = serverInfo
 			sandboxUrl: `http://localhost:${serverInfo.port}`,
 		}
 	: undefined;
+const testOpts = opts as NonNullable<typeof opts>;
 
 describe.skipIf(!opts)("E2B Smoke", { timeout: 120_000 }, () => {
 	let sandbox: Sandbox;
@@ -23,20 +24,20 @@ describe.skipIf(!opts)("E2B Smoke", { timeout: 120_000 }, () => {
 
 	describe("Lifecycle", () => {
 		it("creates a sandbox", async () => {
-			sandbox = await Sandbox.create("base", opts!);
+			sandbox = await Sandbox.create("base", testOpts);
 			created.push(sandbox.sandboxId);
 			expect(sandbox.sandboxId).toMatch(/^sbx-/);
 		});
 
 		it("lists sandboxes and includes the created one", async () => {
-			const paginator = Sandbox.list(opts!);
+			const paginator = Sandbox.list(testOpts);
 			const sandboxes = await paginator.nextItems();
 			const found = sandboxes.find((s) => s.sandboxId === sandbox.sandboxId);
 			expect(found).toBeDefined();
 		});
 
 		it("reconnects to a running sandbox with Sandbox.connect", async () => {
-			const connected = await Sandbox.connect(sandbox.sandboxId, opts!);
+			const connected = await Sandbox.connect(sandbox.sandboxId, testOpts);
 			expect(connected.sandboxId).toBe(sandbox.sandboxId);
 			const result = await connected.commands.run("echo connected");
 			expect(result.stdout.trim()).toBe("connected");
@@ -46,7 +47,7 @@ describe.skipIf(!opts)("E2B Smoke", { timeout: 120_000 }, () => {
 			await sandbox.files.write("/tmp/before-pause.txt", "kept");
 			await sandbox.pause();
 
-			sandbox = await Sandbox.connect(sandbox.sandboxId, opts!);
+			sandbox = await Sandbox.connect(sandbox.sandboxId, testOpts);
 			const result = await sandbox.commands.run("cat /tmp/before-pause.txt");
 			expect(result.stdout).toBe("kept");
 		});
@@ -155,7 +156,7 @@ describe.skipIf(!opts)("E2B Smoke", { timeout: 120_000 }, () => {
 
 	describe("Multiple Sandboxes", () => {
 		it("runs two sandboxes concurrently", async () => {
-			const sandbox2 = await Sandbox.create("base", opts!);
+			const sandbox2 = await Sandbox.create("base", testOpts);
 			created.push(sandbox2.sandboxId);
 			expect(sandbox2.sandboxId).not.toBe(sandbox.sandboxId);
 
@@ -170,9 +171,9 @@ describe.skipIf(!opts)("E2B Smoke", { timeout: 120_000 }, () => {
 		});
 
 		it("has isolated filesystems between sandboxes", async () => {
-			const sbA = await Sandbox.create("base", opts!);
+			const sbA = await Sandbox.create("base", testOpts);
 			created.push(sbA.sandboxId);
-			const sbB = await Sandbox.create("base", opts!);
+			const sbB = await Sandbox.create("base", testOpts);
 			created.push(sbB.sandboxId);
 
 			await sbA.files.write("/tmp/isolated.txt", "sandbox-a");
@@ -197,7 +198,7 @@ describe.skipIf(!opts)("E2B Smoke", { timeout: 120_000 }, () => {
 		});
 
 		it("sandbox is no longer in the list after kill", async () => {
-			const paginator = Sandbox.list(opts!);
+			const paginator = Sandbox.list(testOpts);
 			const sandboxes = await paginator.nextItems();
 			const found = sandboxes.find((s) => s.sandboxId === sandbox.sandboxId);
 			expect(found).toBeUndefined();

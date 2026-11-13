@@ -762,7 +762,7 @@ export class DockerService implements ContainerBackend {
 		const tempPath = `${this.timeoutStatePath}.tmp`;
 		writeFileSync(
 			tempPath,
-			JSON.stringify(Object.fromEntries(this.timeoutState), null, 2) + "\n",
+			`${JSON.stringify(Object.fromEntries(this.timeoutState), null, 2)}\n`,
 		);
 		renameSync(tempPath, this.timeoutStatePath);
 	}

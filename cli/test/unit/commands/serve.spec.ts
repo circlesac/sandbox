@@ -2,9 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const readConfigMock = vi.fn();
 const writeConfigMock = vi.fn();
-const processExitMock = vi
-	.spyOn(process, "exit")
-	.mockImplementation(() => undefined as never);
+vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
 
 vi.mock("../../../src/lib/config.ts", async (importOriginal) => {
 	const actual =
@@ -35,7 +33,7 @@ describe("serve command", () => {
 		await run([]);
 
 		expect(writeConfigMock).toHaveBeenCalledOnce();
-		const written = writeConfigMock.mock.calls[0]![0];
+		const written = writeConfigMock.mock.calls[0]?.[0];
 		expect(written.apiKey).toMatch(/^e2b_[0-9a-f]{40}$/);
 		expect(process.env.API_KEYS).toBe(written.apiKey);
 	});

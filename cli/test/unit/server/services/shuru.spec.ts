@@ -126,7 +126,7 @@ describe("ShuruBackend", () => {
 				lifecycle: LEGACY_LIFECYCLE,
 			});
 
-			const args = spawnMock.mock.calls[0]![0] as string[];
+			const args = spawnMock.mock.calls[0]?.[0] as string[];
 			expect(args).not.toContain("--from");
 		});
 	});
@@ -169,10 +169,10 @@ describe("ShuruBackend", () => {
 
 			const info = await backend.inspectSandbox("sbx-inspect");
 			expect(info).not.toBeNull();
-			expect(info!.sandboxId).toBe("sbx-inspect");
-			expect(info!.accessToken).toBe("token-xyz");
-			expect(info!.state).toBe("running");
-			expect(info!.hostPort).toBe(mockPort);
+			expect(info?.sandboxId).toBe("sbx-inspect");
+			expect(info?.accessToken).toBe("token-xyz");
+			expect(info?.state).toBe("running");
+			expect(info?.hostPort).toBe(mockPort);
 		});
 
 		it("returns null and cleans up if process is dead", async () => {
@@ -237,7 +237,7 @@ describe("ShuruBackend", () => {
 
 			const sigkillCall = killCalls.find(([, sig]) => sig === "SIGKILL");
 			expect(sigkillCall).toBeDefined();
-			expect(sigkillCall![0]).toBe(12345);
+			expect(sigkillCall?.[0]).toBe(12345);
 		});
 	});
 

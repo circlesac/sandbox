@@ -91,7 +91,7 @@ describe("sandbox controllers", () => {
 			expect(res.status).toBe(200);
 			const body = (await res.json()) as Record<string, unknown>[];
 			expect(body).toHaveLength(1);
-			expect(body[0]!.sandboxID).toBe("sbx-test123");
+			expect(body[0]?.sandboxID).toBe("sbx-test123");
 		});
 	});
 

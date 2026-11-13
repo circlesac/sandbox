@@ -7,7 +7,6 @@ import {
 	setExtraSandboxService,
 } from "./extra.ts";
 import {
-	NotFoundError,
 	UnsupportedError,
 	type SandboxService,
 } from "../../services/sandbox.ts";

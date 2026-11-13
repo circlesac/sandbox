@@ -22,5 +22,5 @@ export function readConfig(): SandboxConfig | null {
 
 export function writeConfig(config: SandboxConfig) {
 	mkdirSync(SANDBOX_DIR, { recursive: true });
-	writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+	writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`);
 }
