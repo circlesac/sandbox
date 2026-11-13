@@ -23,7 +23,6 @@ import (
 )
 
 const (
-	defaultTargetFile = "/run/e2b/cpu-target"
 	// maxTargetBytes bounds the target file read. A valid target is at most four digits;
 	// the rest is headroom for whitespace.
 	maxTargetBytes = 64

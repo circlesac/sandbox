@@ -40,7 +40,8 @@ curl -fsSL -o "$tmp_dir/$asset.sha256" "$base_url/$asset.sha256"
 (cd "$tmp_dir" && shasum -a 256 -c "$asset.sha256")
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir"
 
-ip=$(tart ip --wait 30 "$VM_NAME")
+IP_RESOLVER=${TART_IP_RESOLVER:-dhcp}
+ip=$(tart ip --wait 30 --resolver "$IP_RESOLVER" "$VM_NAME")
 ssh_to_vm() {
 	sshpass -p "$PASSWORD" ssh \
 		-o StrictHostKeyChecking=no \
@@ -62,7 +63,7 @@ ssh_to_vm "cat > /tmp/com.circlesac.envd.plist <<'PLIST'
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
 <plist version=\"1.0\"><dict>
 <key>Label</key><string>com.circlesac.envd</string>
-<key>ProgramArguments</key><array><string>/usr/local/bin/envd</string><string>-port</string><string>49983</string></array>
+<key>ProgramArguments</key><array><string>/usr/local/bin/envd</string><string>-port</string><string>49983</string><string>-isnotfc</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
 <key>StandardOutPath</key><string>/tmp/envd.log</string>
