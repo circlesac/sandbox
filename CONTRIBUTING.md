@@ -39,17 +39,22 @@ Pull requests run the same `test` and `test:sdk-matrix` scripts in `.github/work
 | --- | --- | --- | --- |
 | `@biomejs/biome` | 2.6.3 | 2026-10-24 | One natively compiled tool for formatting and linting, configured from `biome init` plus one override: `noExplicitAny` is raised from warning to error. |
 
-### envd-lite (Tart backend)
+### Darwin envd (Tart backend)
 
 ```bash
-cd envd-lite
-go generate ./...     # regenerate protobuf code from upstream .proto files
-go build -o envd-lite .
+cd envd-darwin
+GOARCH=arm64 ./test.sh
+GOARCH=arm64 ./build.sh
 ```
+
+The release workflow publishes the resulting Darwin binaries as versioned
+`envd-darwin-arm64` and `envd-darwin-amd64` GitHub Release assets with SHA-256
+files. The Tart base image should install a pinned release asset when preparing
+the VM.
 
 ### Tart base image setup
 
-envd-lite must be pre-installed in the `sandbox-base` VM for the Tart backend to work.
+The Darwin envd must be pre-installed in the `sandbox-base` VM for the Tart backend to work.
 One-time setup after cloning the base image:
 
 ```bash
@@ -61,10 +66,10 @@ IP=$(tart ip --wait 30 sandbox-base)
 SSH_AUTH_SOCK="" sshpass -p admin ssh -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password \
   admin@$IP 'sudo mkdir -p /usr/local/bin'
-cat envd-lite/envd-lite | SSH_AUTH_SOCK="" sshpass -p admin ssh \
+cat envd-darwin/dist/envd-darwin-arm64 | SSH_AUTH_SOCK="" sshpass -p admin ssh \
   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -o PreferredAuthentications=password admin@$IP \
-  'cat > /tmp/envd-lite && sudo mv /tmp/envd-lite /usr/local/bin/envd-lite && sudo chmod +x /usr/local/bin/envd-lite'
+  'cat > /tmp/envd && sudo mv /tmp/envd /usr/local/bin/envd && sudo chmod +x /usr/local/bin/envd'
 
 # Create LaunchAgent for auto-start on boot
 SSH_AUTH_SOCK="" sshpass -p admin ssh -o StrictHostKeyChecking=no \
@@ -73,12 +78,12 @@ SSH_AUTH_SOCK="" sshpass -p admin ssh -o StrictHostKeyChecking=no \
   "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" \
   "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" \
   "<plist version=\"1.0\"><dict>" \
-  "<key>Label</key><string>com.circlesac.envd-lite</string>" \
-  "<key>ProgramArguments</key><array><string>/usr/local/bin/envd-lite</string><string>-port</string><string>49983</string></array>" \
+  "<key>Label</key><string>com.circlesac.envd</string>" \
+  "<key>ProgramArguments</key><array><string>/usr/local/bin/envd</string><string>-port</string><string>49983</string></array>" \
   "<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>" \
-  "<key>StandardOutPath</key><string>/tmp/envd-lite.log</string>" \
-  "<key>StandardErrorPath</key><string>/tmp/envd-lite.log</string>" \
-  "</dict></plist>" > ~/Library/LaunchAgents/com.circlesac.envd-lite.plist'
+  "<key>StandardOutPath</key><string>/tmp/envd.log</string>" \
+  "<key>StandardErrorPath</key><string>/tmp/envd.log</string>" \
+  "</dict></plist>" > ~/Library/LaunchAgents/com.circlesac.envd.plist'
 
 # Stop VM (saves the changes to disk)
 tart stop sandbox-base

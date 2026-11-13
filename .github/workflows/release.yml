@@ -86,8 +86,43 @@ jobs:
             ${{ matrix.name }}.*
             sandbox_*.deb
 
+  envd:
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            name: envd-darwin-arm64
+          - arch: amd64
+            name: envd-darwin-amd64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: envd-darwin/packages/envd/go.mod
+          cache-dependency-path: envd-darwin/packages/envd/go.sum
+
+      - name: Build Darwin envd
+        env:
+          GOARCH: ${{ matrix.arch }}
+          OUTPUT: ${{ github.workspace }}/envd-darwin/dist/envd
+        run: ./envd-darwin/build.sh
+
+      - name: Package Darwin envd
+        run: |
+          tar czf "${{ matrix.name }}.tar.gz" -C envd-darwin/dist envd
+          shasum -a 256 "${{ matrix.name }}.tar.gz" > "${{ matrix.name }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            ${{ matrix.name }}.tar.gz
+            ${{ matrix.name }}.sha256
+
   github-release:
-    needs: [version, build]
+    needs: [version, build, envd]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,6 +138,7 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.deb
+            artifacts/**/*.sha256
             cli/bin/install.sh
 
   publish-docker:
@@ -169,13 +205,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          VERSION=${{ needs.version.outputs.version }}
+          VERSION="${{ needs.version.outputs.version }}"
           SHA_DARWIN_ARM64=$(shasum -a 256 artifacts/sandbox-darwin-arm64/*.tar.gz | cut -d' ' -f1)
           SHA_DARWIN_AMD64=$(shasum -a 256 artifacts/sandbox-darwin-amd64/*.tar.gz | cut -d' ' -f1)
           SHA_LINUX_ARM64=$(shasum -a 256 artifacts/sandbox-linux-arm64/*.tar.gz | cut -d' ' -f1)
           SHA_LINUX_AMD64=$(shasum -a 256 artifacts/sandbox-linux-amd64/*.tar.gz | cut -d' ' -f1)
 
-          git clone https://x-access-token:${GH_TOKEN}@github.com/circlesac/homebrew-tap.git
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/circlesac/homebrew-tap.git"
           cd homebrew-tap
 
           cp ../cli/homebrew/sandbox.rb.template Formula/sandbox.rb

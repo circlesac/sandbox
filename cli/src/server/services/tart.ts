@@ -188,10 +188,13 @@ export class TartBackend implements ContainerBackend {
 	// A stopped tart VM counts as finished and is deleted, so a pause always
 	// suspends and keeps memory.
 	readonly supportsFilesystemPause = false;
-	readonly envdChecksAccessToken = false;
-	// envd-lite enforces a token it is given; older base images ignore it, so
-	// the control plane keeps checking as well.
+	readonly envdChecksAccessToken = true;
+	// The control plane and envd both enforce the sandbox access token.
 	readonly envdAcceptsAccessToken = true;
+
+	async envdVersion(_sandboxId: string): Promise<string> {
+		return config.tartEnvdVersion;
+	}
 	private instances = new Map<string, TartInstance>();
 	// A separate state directory owns a separate VM namespace. In particular,
 	// a test server must never sweep the persistent control plane's VMs.
@@ -339,7 +342,7 @@ export class TartBackend implements ContainerBackend {
 			);
 		}
 
-		// Wait for envd-lite to become healthy (pre-installed in base image via LaunchAgent)
+		// Wait for envd to become healthy (pre-installed in base image via LaunchAgent)
 		let envdReady = false;
 		const envdMaxRetries = isSuspended ? 30 : 60;
 		const envdPollMs = isSuspended ? 200 : 2000;
@@ -368,8 +371,8 @@ export class TartBackend implements ContainerBackend {
 				await tartExec(["delete", vmName]);
 			} catch {}
 			throw new Error(
-				`envd-lite in VM "${vmName}" did not become healthy within 120s. ` +
-					`Ensure envd-lite is pre-installed in the base image.`,
+				`envd in VM "${vmName}" did not become healthy within 120s. ` +
+					`Ensure envd is pre-installed in the base image.`,
 			);
 		}
 
@@ -540,7 +543,7 @@ export class TartBackend implements ContainerBackend {
 			);
 		}
 
-		// Wait for envd-lite to become healthy, on a time budget rather than a
+		// Wait for envd to become healthy, on a time budget rather than a
 		// count of rounds, since a refused connection returns at once.
 		const healthDeadline = Date.now() + (coldBoot ? 120_000 : 30_000);
 		let healthy = false;
@@ -569,7 +572,7 @@ export class TartBackend implements ContainerBackend {
 		// sandbox nobody can use.
 		if (!healthy) {
 			throw new Error(
-				`envd-lite in VM "${instance.vmName}" did not become healthy after resume`,
+				`envd in VM "${instance.vmName}" did not become healthy after resume`,
 			);
 		}
 
