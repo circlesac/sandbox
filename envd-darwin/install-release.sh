@@ -44,6 +44,7 @@ IP_RESOLVER=${TART_IP_RESOLVER:-dhcp}
 ip=$(tart ip --wait 30 --resolver "$IP_RESOLVER" "$VM_NAME")
 ssh_to_vm() {
 	sshpass -p "$PASSWORD" ssh \
+		-o IdentitiesOnly=yes \
 		-o StrictHostKeyChecking=no \
 		-o UserKnownHostsFile=/dev/null \
 		-o PreferredAuthentications=password \
@@ -69,7 +70,6 @@ ssh_to_vm "cat > /tmp/com.circlesac.envd.plist <<'PLIST'
 <key>StandardOutPath</key><string>/tmp/envd.log</string>
 <key>StandardErrorPath</key><string>/tmp/envd.log</string>
 </dict></plist>
-</plist>
 PLIST
 mkdir -p ~/Library/LaunchAgents
 mv /tmp/com.circlesac.envd.plist ~/Library/LaunchAgents/com.circlesac.envd.plist

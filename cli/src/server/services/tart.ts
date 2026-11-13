@@ -148,8 +148,9 @@ async function tartList(): Promise<TartVm[]> {
 }
 
 function tartIp(vmName: string, waitSec = 30): Promise<string> {
-	const args = ["ip", "--wait", String(waitSec), vmName];
+	const args = ["ip", "--wait", String(waitSec)];
 	if (config.tartIpResolver) args.push("--resolver", config.tartIpResolver);
+	args.push(vmName);
 	return tartExec(args, (waitSec + 10) * 1000);
 }
 
@@ -317,7 +318,11 @@ export class TartBackend implements ContainerBackend {
 		}
 
 		let vmIp: string | undefined;
-		const maxRetries = isSuspended ? 2 : 6;
+		const maxRetries = isSuspended
+			? 2
+			: config.tartIpResolver === "arp"
+				? 30
+				: 6;
 		const ipWaitSec = isSuspended ? 3 : 30;
 		for (let i = 0; i < maxRetries; i++) {
 			try {
@@ -325,6 +330,9 @@ export class TartBackend implements ContainerBackend {
 				if (vmIp) break;
 			} catch {
 				// VM not ready yet, retry
+			}
+			if (!vmIp && config.tartIpResolver === "arp" && i + 1 < maxRetries) {
+				await new Promise((resolve) => setTimeout(resolve, 3_000));
 			}
 		}
 
