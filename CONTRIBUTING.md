@@ -7,19 +7,18 @@ cd cli
 bun install
 bun run dev serve        # run server in dev mode
 bun run test             # format check, lint, type check, unit + integration tests
-bun run test:local       # format, lint, types, unit tests, every local provider, SDK matrix, envd-lite fallback
+bun run test:local       # format, lint, types, unit tests, every local provider, SDK matrix
 bun run test:unit        # unit tests only
 bun run test:docker      # E2B smoke suite on the Docker backend
 bun run test:tart        # E2B smoke suite on Tart macOS VMs
 bun run test:shuru       # E2B smoke suite on Shuru microVMs
 bun run test:sdk-matrix  # Docker integration suites on the lowest supported and the latest SDK
-bun run test:envd-lite   # envd-lite: go generate, gofmt, go vet, go test
 bun run test:upstream    # e2b-dev/runtime API/envd tests; fails on baseline regressions
 bun run test:coverage    # all tests with a coverage report for src/
 bun run format           # apply formatting
 ```
 
-`test:docker`, `test:tart`, and `test:shuru` fail with the missing prerequisite when the provider is not set up, instead of skipping. `test:local` runs what this machine can, including the envd-lite compatibility fallback when Go and protoc are installed, and lists what it could not run and why.
+`test:docker`, `test:tart`, and `test:shuru` fail with the missing prerequisite when the provider is not set up, instead of skipping. `test:local` runs the providers available on this machine and lists what it could not run and why.
 
 The Tart memory-resume test explicitly reports a skip if macOS cannot save VM memory or rejects restoring it with `VZErrorDomain: permission denied`. Before skipping a rejected restore, it verifies that the API reports the failure and the VM remains suspended. Other resume errors fail the suite; a skip does not establish working memory restore on that host.
 
@@ -92,7 +91,6 @@ cli/                  # Control plane server + CLI
     tart.ts           # Tart backend
   test/               # Unit + integration tests
 envd-darwin/           # Pinned upstream envd source and Darwin release tooling
-envd-lite/             # Compatibility fallback for older Tart base images
 docker/sandbox/       # Docker base image
 docs/                 # Backend comparison docs
 ```
