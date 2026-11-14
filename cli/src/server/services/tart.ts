@@ -352,7 +352,11 @@ export class TartBackend implements ContainerBackend {
 			throw new Error(
 				reason
 					? `Tart VM "${vmName}" did not start: ${reason}`
-					: `Tart VM "${vmName}" failed to obtain an IP address within 190s`,
+					: `Tart VM "${vmName}" failed to obtain an IP address within 190s. ` +
+							`For bridged networking, set TART_NET_BRIDGED=en0 and TART_IP_RESOLVER=arp. ` +
+							`For NAT networking, reduce the macOS DHCP lease with: ` +
+							`sudo defaults write /Library/Preferences/SystemConfiguration/com.apple.InternetSharing.default.plist ` +
+							`bootpd -dict DHCPLeaseTimeSecs -int 600`,
 			);
 		}
 

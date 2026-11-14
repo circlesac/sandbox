@@ -183,7 +183,7 @@ const docker = new Docker({ socketPath: '/run/podman/podman.sock' });
 | Factor | Docker | Tart | Podman | Winner |
 |---|---|---|---|---|
 | Matches existing plan | Yes | macOS only | Requires changes | Docker |
-| SDK maturity | Native | Custom (envd-lite) | Compat layer | Docker |
+| SDK maturity | Native | Upstream Darwin envd | Compat layer | Docker |
 | Community resources | Vast | Moderate | Growing | Docker |
 | Daemonless (no SPOF) | No | Yes (per-VM process) | Yes | Tart/Podman |
 | Rootless security | Optional | Full VM isolation | Default | Tart |
