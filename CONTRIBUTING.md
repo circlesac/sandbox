@@ -57,6 +57,9 @@ the VM.
 The Darwin envd must be pre-installed in the `sandbox-base` VM for the Tart backend to work.
 One-time setup after cloning the base image:
 
+Use Tart 2.41.1 or newer. Older Tart releases can stop polling when the bridged
+ARP cache is empty while a guest is still booting.
+
 ```bash
 # Boot the base VM
 tart run sandbox-base --no-graphics &
@@ -66,6 +69,16 @@ TART_IP_RESOLVER=arp ./envd-darwin/install-release.sh <release-tag> sandbox-base
 
 # Stop VM (saves the changes to disk)
 tart stop sandbox-base
+```
+
+The Tart backend can use bridged networking with `TART_NET_BRIDGED=en0` and
+`TART_IP_RESOLVER=arp`. ARP resolution depends on guest network traffic. The
+default NAT network uses DHCP resolution instead. If the host creates many VMs,
+reduce the macOS DHCP lease time before running the suite:
+
+```bash
+sudo defaults write /Library/Preferences/SystemConfiguration/com.apple.InternetSharing.default.plist \
+  bootpd -dict DHCPLeaseTimeSecs -int 600
 ```
 
 ## Project Structure

@@ -62,6 +62,10 @@ shuru checkpoint create sandbox-base --allow-net --mount "$PWD:/mnt/ctx" -- sh -
 
 **Default credentials:** `admin` / `admin` (standard Tart base image convention).
 
+Tart 2.41.1 or newer is required for reliable IP polling while a bridged guest
+is booting. With bridged networking, resolve the guest through the ARP table
+using `TART_NET_BRIDGED=en0` and `TART_IP_RESOLVER=arp`.
+
 **Base image setup:**
 
 ```bash
