@@ -53,6 +53,13 @@ ssh_to_vm() {
 }
 
 
+# Fail before changing the daemon if the base guest lacks the upstream runtime path.
+ssh_to_vm 'mkdir -p /run/e2b && test -w /run/e2b' || {
+	printf 'Guest /run/e2b must be writable. Complete the envd-darwin Tart guest setup and reboot first.\n' >&2
+	exit 1
+}
+
+
 # The command substitution must run inside the VM's login session.
 # shellcheck disable=SC2016
 ssh_to_vm \

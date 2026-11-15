@@ -45,7 +45,7 @@ The daemon source, Darwin tests and release workflow live in [circlesac/envd-dar
 ### Tart base image setup
 
 The Darwin envd must be pre-installed in the `sandbox-base` VM for the Tart backend to work.
-One-time setup after cloning the base image:
+One-time setup after cloning the base image: configure the guest `/run` link and reboot using [envd-darwin guest setup](https://github.com/circlesac/envd-darwin/blob/main/darwin/README.md#tart-guest-setup), then install the release below. The installer requires `/run/e2b` to be writable.
 
 Use Tart 2.41.1 or newer. Older Tart releases can stop polling when the bridged
 ARP cache is empty while a guest is still booting.
