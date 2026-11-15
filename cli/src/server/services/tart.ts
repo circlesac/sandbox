@@ -112,6 +112,13 @@ interface TartVm {
 	// tart list --format json provides more fields but we only need these
 }
 
+function restoreFailureHint(reason: string): string {
+	if (/VZErrorDomain[\s\S]*restore[\s\S]*permission denied/i.test(reason)) {
+		return `${reason} Host screen lock can prevent macOS from decrypting saved VM memory. Unlock the host Mac and retry; the saved VM state is preserved.`;
+	}
+	return reason;
+}
+
 /**
  * Runs the tart CLI without blocking the server: `tart ip --wait`, suspend,
  * and clone can each take up to a minute or two, and a synchronous call would
@@ -352,7 +359,7 @@ export class TartBackend implements ContainerBackend {
 			const reason = run.exitCode !== null ? (await runError).trim() : "";
 			throw new Error(
 				reason
-					? `Tart VM "${vmName}" did not start: ${reason}`
+					? `Tart VM "${vmName}" did not start: ${restoreFailureHint(reason)}`
 					: `Tart VM "${vmName}" failed to obtain an IP address within 190s. ` +
 							`For bridged networking, set TART_NET_BRIDGED=en0 and TART_IP_RESOLVER=arp. ` +
 							`For NAT networking, reduce the macOS DHCP lease with: ` +
@@ -556,7 +563,7 @@ export class TartBackend implements ContainerBackend {
 				run && run.exitCode !== null ? (await runError).trim() : "";
 			throw new Error(
 				reason
-					? `Tart VM "${instance.vmName}" did not resume: ${reason}`
+					? `Tart VM "${instance.vmName}" did not resume: ${restoreFailureHint(reason)}`
 					: `VM "${instance.vmName}" failed to get IP on resume`,
 			);
 		}
@@ -571,7 +578,7 @@ export class TartBackend implements ContainerBackend {
 			if (run && run.exitCode !== null) {
 				const reason = (await runError).trim();
 				throw new Error(
-					`Tart VM "${instance.vmName}" did not resume: ${reason || `tart run exited with code ${run.exitCode}`}`,
+					`Tart VM "${instance.vmName}" did not resume: ${restoreFailureHint(reason) || `tart run exited with code ${run.exitCode}`}`,
 				);
 			}
 			try {
