@@ -27,6 +27,8 @@ export interface ProxyTarget {
 
 export interface ContainerBackend {
 	readonly type: BackendType;
+	/** Login user used by envd when the image has a platform-specific account. */
+	readonly defaultUser?: string;
 	readonly supportsPause: boolean;
 	/** Whether a pause can drop memory and keep only the filesystem. */
 	readonly supportsFilesystemPause: boolean;

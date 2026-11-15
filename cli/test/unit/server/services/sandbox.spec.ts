@@ -48,6 +48,7 @@ interface FakeSandbox {
  */
 class FakeBackend implements ContainerBackend {
 	readonly type = "docker" as const;
+	defaultUser?: string;
 	supportsPause = true;
 	supportsFilesystemPause = true;
 	envdChecksAccessToken = true;
@@ -686,6 +687,24 @@ describe("SandboxService", () => {
 	});
 
 	describe("connect", () => {
+		it("preserves the backend login user when creating and resuming", async () => {
+			backend.defaultUser = "admin";
+			const { sandboxID } = await service.create({
+				timeout: 10,
+				autoPause: true,
+			});
+			expect(envd.init).toHaveBeenLastCalledWith(
+				40000,
+				expect.objectContaining({ defaultUser: "admin" }),
+			);
+			await vi.advanceTimersByTimeAsync(10_000);
+			await service.connect(sandboxID, 20);
+			expect(envd.init).toHaveBeenLastCalledWith(
+				40001,
+				expect.objectContaining({ defaultUser: "admin" }),
+			);
+		});
+
 		it("resumes a paused sandbox, re-initializes envd, and starts a new timeout", async () => {
 			const { sandboxID } = await service.create({
 				timeout: 10,

@@ -71,7 +71,9 @@ tart stop sandbox-base
 ```
 
 The Tart backend can use bridged networking with `TART_NET_BRIDGED=en0` and
-`TART_IP_RESOLVER=arp`. ARP resolution depends on guest network traffic. The
+`TART_IP_RESOLVER=agent` when the base image has Tart Guest Agent installed.
+The agent reads the address inside the guest. `TART_IP_RESOLVER=arp` is also
+available, and depends on guest network traffic populating the host ARP cache. The
 default NAT network uses DHCP resolution instead. If the host creates many VMs,
 reduce the macOS DHCP lease time before running the suite:
 

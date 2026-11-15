@@ -156,6 +156,38 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 			const result = await sandbox.commands.run("whoami");
 			expect(result.stdout.trim()).toBe("admin");
 		});
+
+		it("streams output from a reconnected command", async () => {
+			const command = await sandbox.commands.run("sleep 1; echo connected", {
+				background: true,
+			});
+			const connection = await sandbox.commands.connect(command.pid);
+			expect((await connection.wait()).stdout.trim()).toBe("connected");
+		});
+
+		it("accepts PTY input and resizes the terminal", async () => {
+			let output = "";
+			const terminal = await sandbox.pty.create({
+				cols: 80,
+				rows: 24,
+				onData: (data) => {
+					output += new TextDecoder().decode(data);
+				},
+			});
+			try {
+				await sandbox.pty.resize(terminal.pid, { cols: 100, rows: 30 });
+				await sandbox.pty.sendInput(
+					terminal.pid,
+					new TextEncoder().encode("stty size; printf 'pty-%s\\n' ready\n"),
+				);
+				await expect
+					.poll(() => output, { timeout: 10_000 })
+					.toContain("pty-ready");
+				expect(output).toContain("30 100");
+			} finally {
+				await sandbox.pty.kill(terminal.pid);
+			}
+		});
 	});
 
 	// ── Filesystem ─────────────────────────────────────────────
@@ -181,6 +213,25 @@ describe.skipIf(skip)("Tart E2B Smoke", { timeout: 600_000 }, () => {
 			await sandbox.commands.run("echo -n 'from-cmd' > /tmp/cmd-file.txt");
 			const content = await sandbox.files.read("/tmp/cmd-file.txt");
 			expect(content).toBe("from-cmd");
+		});
+
+		it("reports file changes through the directory watcher", async () => {
+			await sandbox.files.makeDir("/tmp/watch-test");
+			const names: string[] = [];
+			const watcher = await sandbox.files.watchDir(
+				"/tmp/watch-test",
+				(event) => {
+					names.push(event.name);
+				},
+			);
+			try {
+				await sandbox.files.write("/tmp/watch-test/created.txt", "watched");
+				await expect
+					.poll(() => names, { timeout: 10_000 })
+					.toContain("created.txt");
+			} finally {
+				await watcher.stop();
+			}
 		});
 	});
 

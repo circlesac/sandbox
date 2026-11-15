@@ -192,6 +192,7 @@ function createTcpProxy(
 
 export class TartBackend implements ContainerBackend {
 	readonly type = "tart" as const;
+	readonly defaultUser = "admin";
 	readonly supportsPause = true;
 	// A stopped tart VM counts as finished and is deleted, so a pause always
 	// suspends and keeps memory.

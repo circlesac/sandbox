@@ -12,3 +12,8 @@ The module layout is preserved so the upstream `packages/envd` build and its
 
 The local Darwin patch uses `os.Executable()` for re-exec helpers because
 macOS does not provide `/proc/self/exe`. Linux keeps the upstream path.
+
+Darwin process creation launches the requested command directly, avoiding
+Linux `/proc` priority setup. A LaunchAgent keeps its inherited login-user
+credentials when running as that same user. Runtime files use `/tmp/e2b`
+because macOS does not provide a writable `/run` directory.
