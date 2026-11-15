@@ -63,8 +63,6 @@ TART_IP_RESOLVER=agent ./scripts/install-envd.sh
 tart stop sandbox-base
 ```
 
-Tart can suspend a VM while the host screen is locked, but macOS may refuse to decrypt its saved memory during resume until the host is unlocked. This was reproduced locally with the released Darwin envd. A failed restore keeps the sandbox paused and its saved state intact; unlock the host Mac and retry. Do not treat a cold boot as memory-preserving resume. The experimental in-memory pause proposal is tracked in [upstream Tart #1437](https://github.com/openai/tart/pull/1437) and is not required by this release.
-
 The Tart backend can use bridged networking with `TART_NET_BRIDGED=en0` and
 `TART_IP_RESOLVER=agent` when the base image has Tart Guest Agent installed.
 The agent reads the address inside the guest. `TART_IP_RESOLVER=arp` is also
