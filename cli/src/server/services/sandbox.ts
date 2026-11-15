@@ -158,6 +158,7 @@ export class SandboxService {
 			this._sandboxPlatform.set(p.sandboxId, p.platform);
 			await this.envd.waitForHealth(hostPort);
 			await this.envd.init(hostPort, {
+				...(p.backend.defaultUser && { defaultUser: p.backend.defaultUser }),
 				accessToken: this.envdToken(
 					p.backend,
 					p.lifecycle.secure,
@@ -533,6 +534,7 @@ export class SandboxService {
 
 		await this.envd.waitForHealth(hostPort);
 		await this.envd.init(hostPort, {
+			...(backend.defaultUser && { defaultUser: backend.defaultUser }),
 			accessToken: this.envdToken(
 				backend,
 				info.lifecycle.secure,
