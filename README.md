@@ -68,10 +68,9 @@ sandbox serve
 brew install cirruslabs/cli/tart
 tart clone ghcr.io/cirruslabs/macos-sequoia-base:latest sandbox-base
 
-# Build and install the Darwin envd into the base image (one-time)
-cd envd-darwin
-GOARCH=arm64 ./build.sh
-# See CONTRIBUTING.md for base image setup with the Darwin envd pre-installed.
+# Install the pinned Darwin envd release into the running base VM (one-time).
+# See CONTRIBUTING.md for boot and networking setup.
+./scripts/install-envd.sh
 
 # Start with macOS support alongside Docker
 SANDBOX_MACOS_BACKEND=tart sandbox serve
@@ -79,10 +78,7 @@ SANDBOX_MACOS_BACKEND=tart sandbox serve
 
 The Darwin envd is pre-installed in the base image with a LaunchAgent, so each sandbox only needs to clone the VM and boot it. VM creation takes ~30-60s depending on host CPU.
 
-The release workflow publishes pinned `envd-darwin-arm64` and
-`envd-darwin-amd64` archives with SHA-256 files to the same GitHub Release as
-the CLI. Tart base images should install one of these versioned assets instead
-of downloading an unpinned build.
+Darwin envd is maintained and released by [circlesac/envd-darwin](https://github.com/circlesac/envd-darwin). `scripts/envd-release` pins the release used by `scripts/install-envd.sh`, which verifies the archive SHA-256 before installation. The CLI release does not build or publish envd.
 
 ### Public endpoint for a local control plane
 

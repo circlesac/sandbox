@@ -5,4 +5,3 @@ cloudflared.yml
 cloudflared-credentials.json
 sandbox-config.json
 *.bun-build
-envd-darwin/dist/

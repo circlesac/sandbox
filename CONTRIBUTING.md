@@ -40,16 +40,7 @@ Pull requests run the same `test` and `test:sdk-matrix` scripts in `.github/work
 
 ### Darwin envd (Tart backend)
 
-```bash
-cd envd-darwin
-GOARCH=arm64 ./test.sh
-GOARCH=arm64 ./build.sh
-```
-
-The release workflow publishes the resulting Darwin binaries as versioned
-`envd-darwin-arm64` and `envd-darwin-amd64` GitHub Release assets with SHA-256
-files. The Tart base image should install a pinned release asset when preparing
-the VM.
+The daemon source, Darwin tests and release workflow live in [circlesac/envd-darwin](https://github.com/circlesac/envd-darwin). Update `scripts/envd-release` only after testing the new release with `bun run test:tart`. The pin is a distribution version; `TART_ENVD_VERSION` is the daemon protocol version reported to the E2B SDK.
 
 ### Tart base image setup
 
@@ -61,10 +52,12 @@ ARP cache is empty while a guest is still booting.
 
 ```bash
 # Boot the base VM
-tart run sandbox-base --no-graphics &
+tart run sandbox-base --no-graphics --net-bridged=en0
+# Keep this running and install from another terminal.
 
 # Download, verify, install, and bootstrap the pinned Darwin envd release.
-TART_IP_RESOLVER=arp ./envd-darwin/install-release.sh <release-tag> sandbox-base
+TART_IP_RESOLVER=agent ./scripts/install-envd.sh
+# Optional override: ./scripts/install-envd.sh <release-tag> <vm-name>
 
 # Stop VM (saves the changes to disk)
 tart stop sandbox-base
@@ -92,7 +85,7 @@ cli/                  # Control plane server + CLI
     shuru.ts          # Shuru backend
     tart.ts           # Tart backend
   test/               # Unit + integration tests
-envd-darwin/           # Pinned upstream envd source and Darwin release tooling
+scripts/              # Pinned Darwin envd release and Tart installer
 docker/sandbox/       # Docker base image
 docs/                 # Backend comparison docs
 ```

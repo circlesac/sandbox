@@ -1,14 +1,15 @@
 #!/bin/sh
 set -eu
 
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-	printf 'Usage: %s <release-tag> [vm-name]\n' "$0" >&2
+if [ "$#" -gt 2 ]; then
+	printf 'Usage: %s [release-tag] [vm-name]\n' "$0" >&2
 	exit 2
 fi
 
-VERSION=$1
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+VERSION=${1:-$(cat "$ROOT/scripts/envd-release")}
 VM_NAME=${2:-sandbox-base}
-REPO=${ENVD_RELEASE_REPO:-circlesac/sandbox}
+REPO=${ENVD_RELEASE_REPO:-circlesac/envd-darwin}
 PASSWORD=${TART_SSH_PASSWORD:-admin}
 
 case "$(uname -m)" in
