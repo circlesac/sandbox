@@ -279,6 +279,24 @@ describe("handleProxyRequest", () => {
 		expect(await res.text()).toContain("could not resume");
 	});
 
+	it("passes host-unlock guidance through the command proxy response", async () => {
+		const { sandboxes, deps, request } = setup(true);
+		sandboxes.set("sbx-a", {
+			state: "paused",
+			lifecycle: lifecycle({ autoPause: true, autoResume: true }),
+		});
+		const reason =
+			"Unlock the host Mac and retry; the saved VM state is preserved.";
+		vi.mocked(deps.resumeForTraffic).mockRejectedValueOnce(new Error(reason));
+		const res = await request(
+			{ sandboxId: "sbx-a", port: 49983 },
+			"/process.Process/Start",
+		);
+		expect(res.status).toBe(502);
+		expect(await res.text()).toContain(reason);
+		expect(sandboxes.get("sbx-a")?.state).toBe("paused");
+	});
+
 	it("keeps a paused sandbox paused without autoResume and says how to resume", async () => {
 		const { sandboxes, request } = setup(true);
 		sandboxes.set("sbx-a", {
