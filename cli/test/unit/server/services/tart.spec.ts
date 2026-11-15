@@ -745,6 +745,8 @@ describe("TartBackend", () => {
 					.catch((err: unknown) => err);
 				await vi.advanceTimersByTimeAsync(33_000);
 				expect(String(await failed)).toMatch(/restore permission denied/);
+				expect(String(await failed)).toContain("Unlock the host Mac and retry");
+				expect(String(await failed)).toContain("saved VM state is preserved");
 				expect(vi.getTimerCount()).toBe(0);
 				expect((await backend.inspectSandbox("sbx-restore"))?.state).toBe(
 					"paused",

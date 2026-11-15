@@ -68,10 +68,9 @@ sandbox serve
 brew install cirruslabs/cli/tart
 tart clone ghcr.io/cirruslabs/macos-sequoia-base:latest sandbox-base
 
-# Build and install the Darwin envd into the base image (one-time)
-cd envd-darwin
-GOARCH=arm64 ./build.sh
-# See CONTRIBUTING.md for base image setup with the Darwin envd pre-installed.
+# Install the pinned Darwin envd release into the running base VM (one-time).
+# See CONTRIBUTING.md for boot and networking setup.
+./scripts/install-envd.sh
 
 # Start with macOS support alongside Docker
 SANDBOX_MACOS_BACKEND=tart sandbox serve
@@ -79,10 +78,7 @@ SANDBOX_MACOS_BACKEND=tart sandbox serve
 
 The Darwin envd is pre-installed in the base image with a LaunchAgent, so each sandbox only needs to clone the VM and boot it. VM creation takes ~30-60s depending on host CPU.
 
-The release workflow publishes pinned `envd-darwin-arm64` and
-`envd-darwin-amd64` archives with SHA-256 files to the same GitHub Release as
-the CLI. Tart base images should install one of these versioned assets instead
-of downloading an unpinned build.
+Darwin envd is maintained and released by [circlesac/envd-darwin](https://github.com/circlesac/envd-darwin). `scripts/envd-release` pins the release used by `scripts/install-envd.sh`, which verifies the archive SHA-256 before installation. The CLI release does not build or publish envd.
 
 ### Public endpoint for a local control plane
 
@@ -185,7 +181,7 @@ Known differences that are not errors:
 
 - `getHost(port)` returns `<port>-<sandboxId>.<host the client used>`, for example `3000-sbx-abc.localhost:49982`. Browsers and curl resolve `*.localhost`; behind a public hostname, the extra subdomain level needs a wildcard certificate that covers it, so header routing (`E2b-Sandbox-Id` and `E2b-Sandbox-Port`) is the dependable route.
 - On Docker, sandboxes share one bridge network, so a service listening on all interfaces in one sandbox is reachable from another sandbox, and `allowPublicTraffic: false` guards only the proxy. A port that listens only on loopback is forwarded for the proxy alone; other sandboxes are refused.
-- Tart sandboxes are recorded in `~/.sandbox/tart-instances.json`, so a server restart keeps them: a paused VM resumes on the next connect, and a running VM gets its envd forwarding back on first use; only `sandbox-sbx-*` VMs that no state entry claims are deleted as orphans. A custom `SANDBOX_STATE_DIR` gets its own VM-name prefix, so test servers sweep only their own VMs. If macOS refuses to restore saved VM memory, resume reports Tart's error and keeps the VM paused with its disk and saved memory intact.
+- Tart sandboxes are recorded in `~/.sandbox/tart-instances.json`, so a server restart keeps them: a paused VM resumes on the next connect, and a running VM gets its envd forwarding back on first use; only `sandbox-sbx-*` VMs that no state entry claims are deleted as orphans. A custom `SANDBOX_STATE_DIR` gets its own VM-name prefix, so test servers sweep only their own VMs. On hosts where screen lock prevents macOS from decrypting saved VM memory, suspend can succeed but resume fails until the host Mac is unlocked. The error includes unlock-and-retry guidance and keeps the VM paused with its disk and saved memory intact. An alternative that keeps the VM in memory is proposed in [upstream Tart #1437](https://github.com/openai/tart/pull/1437); it is not part of this release.
 - On Tart, a command ends when its process exits and its output has gone quiet for 200 ms. A background process it started that keeps writing to the same output (a log loop) holds the end back until it stops; redirect such a process's output.
 - WebSocket upgrades to sandbox ports are not proxied.
 - The `Idempotency-Key` header on create is not honored; a retried create can start a second sandbox.
